@@ -89,6 +89,16 @@ export interface NewAiDecision {
   error?: string | null;
 }
 
+export interface CostRollupRow {
+  kind: string;
+  model: string;
+  /** UTC day, YYYY-MM-DD (prefix of created_at). */
+  day: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface FtsHit {
   kind: string;
   refId: string;
@@ -947,6 +957,24 @@ export class Db {
     }
     const sql = `SELECT * FROM ai_decisions ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT ?`;
     return mapRows<AiDecision>(this.raw.prepare(sql).all(...params, limit));
+  }
+
+  /**
+   * Per (kind, model, UTC day) usage rollup over all of ai_decisions — the raw
+   * material for the costs report. Token sums treat NULL as 0.
+   */
+  costRollup(): CostRollupRow[] {
+    return mapRows<CostRollupRow>(
+      this.raw
+        .prepare(
+          `SELECT kind, model, substr(created_at, 1, 10) AS day, COUNT(*) AS calls,
+                  COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                  COALESCE(SUM(output_tokens), 0) AS output_tokens
+           FROM ai_decisions
+           GROUP BY kind, model, day`,
+        )
+        .all(),
+    );
   }
 
   // ---------- source_check_log ----------

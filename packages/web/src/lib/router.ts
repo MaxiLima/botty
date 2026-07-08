@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
-export const PAGES = ['chat', 'tasks', 'people', 'inspector', 'config'] as const;
+export const PAGES = ['chat', 'tasks', 'people', 'inspector', 'costs', 'config'] as const;
 export type Page = (typeof PAGES)[number];
 
 function parseHash(): Page {

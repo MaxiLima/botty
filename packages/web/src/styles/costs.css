@@ -1,0 +1,273 @@
+/* ── costs page ──────────────────────────────────────────────────────────── */
+
+.costs-page {
+  max-width: 880px;
+  padding-bottom: 24px;
+}
+
+.costs-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 2px 0 14px;
+}
+.costs-note code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  padding: 0.5px 4px;
+}
+.costs-warn {
+  color: var(--amber);
+}
+
+/* stat tiles */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat-label {
+  color: var(--faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.stat-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+.stat-sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* chart card */
+.chart-card,
+.costs-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.chart-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.chart-plot {
+  position: relative;
+  height: 160px;
+  margin: 6px 44px 0 0;
+  border-bottom: 1px solid var(--border-hi); /* baseline */
+}
+.chart-grid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--border); /* hairline, recessive */
+  pointer-events: none;
+}
+.chart-tick {
+  position: absolute;
+  right: -44px;
+  top: -7px;
+  width: 40px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--faint);
+  text-align: left;
+  padding-left: 4px;
+}
+.chart-cols {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.chart-cell {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  outline: none;
+}
+.chart-cell.hovered {
+  background: rgba(255, 255, 255, 0.03);
+}
+.chart-col {
+  width: 60%;
+  max-width: 24px;
+  height: 100%; /* segments size against the full plot, stacked from the baseline */
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+  gap: 2px; /* surface gap between stacked segments */
+}
+.chart-seg {
+  min-height: 1px;
+}
+.chart-cell.hovered .chart-seg {
+  filter: brightness(1.15);
+}
+.chart-col .chart-seg:last-child {
+  border-radius: 4px 4px 0 0; /* rounded data-end; square at the baseline */
+}
+
+.chart-tooltip {
+  position: absolute;
+  top: 4px;
+  z-index: 5;
+  background: var(--surface-2);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 8px 10px;
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.tip-head {
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.6;
+}
+.tip-key {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* window selector */
+.win-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.win-label {
+  color: var(--faint);
+  font-size: 11px;
+  margin-right: 2px;
+}
+.win-btn {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: transparent;
+}
+.win-btn:hover {
+  color: var(--accent-hi);
+  border-color: var(--accent);
+}
+.win-btn.active {
+  color: var(--accent-hi);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+/* breakdown tables */
+.costs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.costs-table th {
+  color: var(--faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.costs-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.costs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.costs-table td:first-child {
+  white-space: nowrap;
+}
+.costs-table .legend-swatch {
+  margin-right: 7px;
+  vertical-align: 0;
+}
+.costs-table tr.zero {
+  color: var(--faint);
+}
+.costs-table tr.zero .legend-swatch,
+.costs-table tr.zero .meter-fill {
+  opacity: 0.35;
+}
+.costs-table td.num,
+.costs-table th.num {
+  font-variant-numeric: tabular-nums;
+}
+.costs-table .mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.meter-col {
+  width: 30%;
+  min-width: 120px;
+}
+.meter-track {
+  height: 8px;
+  background: var(--surface-3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  border-radius: 4px 4px 4px 4px;
+  min-width: 0;
+}

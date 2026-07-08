@@ -7,6 +7,7 @@ import {
   type AiDecision,
   type ChatTurn,
   type ConfigFileName,
+  type CostsReport,
   type Interaction,
   type Person,
   type ProactiveLogRow,
@@ -103,6 +104,9 @@ export function createApi(baseUrl: string) {
     rawLog: (opts: { source?: string; limit?: number } = {}) =>
       req<{ events: FunnelRow[] }>('GET', `/api/raw-log${qs(opts)}`),
     sourceChecks: (limit?: number) => req<{ checks: SourceCheckRow[] }>('GET', `/api/source-checks${qs({ limit })}`),
+
+    // Costs
+    costs: () => req<{ report: CostsReport }>('GET', '/api/costs'),
 
     // Config
     config: () => req<{ files: { persona: string; team: string; heartbeat: string } }>('GET', '/api/config'),

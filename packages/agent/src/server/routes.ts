@@ -18,6 +18,7 @@ import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { nowIso, type Db } from '../db/index.js';
 import { badRequest, notFound, param, parseBody, queryInt, queryStr, wrap } from './errors.js';
+import { buildCostsReport, pricingWithOverrides } from './costs.js';
 import { nanoid } from 'nanoid';
 import { notifyMacos } from '../loop/notify-macos.js';
 
@@ -292,6 +293,16 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
     '/source-checks',
     wrap((req, res) => {
       res.json({ checks: db.listSourceChecks(queryInt(req.query.limit, 'limit')) });
+    }),
+  );
+
+  // ----- costs -----
+
+  router.get(
+    '/costs',
+    wrap((_req, res) => {
+      const pricing = pricingWithOverrides(db.getSetting('llm.pricing'));
+      res.json({ report: buildCostsReport(db.costRollup(), pricing) });
     }),
   );
 

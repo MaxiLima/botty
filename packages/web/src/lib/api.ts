@@ -1,6 +1,7 @@
 import type {
   AiDecision,
   ChatAttachment,
+  CostsReport,
   ChatTurn,
   ConfigFileName,
   Interaction,
@@ -100,6 +101,9 @@ export const api = {
   rawLog: (opts: { source?: string; limit?: number } = {}) =>
     req<{ events: RawLogRow[] }>('GET', `/api/raw-log${qs(opts)}`),
   sourceChecks: (limit?: number) => req<{ checks: SourceCheckRow[] }>('GET', `/api/source-checks${qs({ limit })}`),
+
+  // Costs
+  costs: () => req<{ report: CostsReport }>('GET', '/api/costs'),
 
   // Config
   config: () => req<{ files: { persona: string; team: string; heartbeat: string } }>('GET', '/api/config'),

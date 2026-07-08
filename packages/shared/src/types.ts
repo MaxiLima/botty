@@ -198,6 +198,58 @@ export const CalendarEventSchema = z.object({
 });
 export type CalendarEvent = z.infer<typeof CalendarEventSchema>;
 
+// ---------- costs report ----------
+
+export const CostTotalsSchema = z.object({
+  calls: z.number(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  costUsd: z.number(),
+  /** Calls whose model has no pricing entry — tokens counted, cost not. */
+  unpricedCalls: z.number(),
+});
+export type CostTotals = z.infer<typeof CostTotalsSchema>;
+
+export const CostModelRowSchema = CostTotalsSchema.extend({
+  model: z.string(),
+  priced: z.boolean(),
+});
+export type CostModelRow = z.infer<typeof CostModelRowSchema>;
+
+export const CostWindowSchema = z.object({
+  totals: CostTotalsSchema,
+  /** Keyed by CostCategory; every category is always present. */
+  byCategory: z.record(z.string(), CostTotalsSchema),
+  /** Models used inside the window, highest cost first. */
+  byModel: z.array(CostModelRowSchema),
+});
+export type CostWindow = z.infer<typeof CostWindowSchema>;
+
+export const CostDayRowSchema = z.object({
+  /** UTC day, YYYY-MM-DD. Continuous over the report range (zero-filled). */
+  date: z.string(),
+  calls: z.number(),
+  costUsd: z.number(),
+  /** costUsd per CostCategory. */
+  byCategory: z.record(z.string(), z.number()),
+});
+export type CostDayRow = z.infer<typeof CostDayRowSchema>;
+
+export const CostsReportSchema = z.object({
+  generatedAt: z.string(),
+  windows: z.object({
+    today: CostWindowSchema,
+    last7d: CostWindowSchema,
+    last30d: CostWindowSchema,
+    allTime: CostWindowSchema,
+  }),
+  /** Last 30 UTC days, oldest first. */
+  byDay: z.array(CostDayRowSchema),
+  /** Effective USD/MTok rates the report was priced with. */
+  pricing: z.record(z.string(), z.object({ inputPerMTok: z.number(), outputPerMTok: z.number() })),
+});
+export type CostsReport = z.infer<typeof CostsReportSchema>;
+
 // ---------- LLM structured-output schemas ----------
 
 export const ClassifierOutputSchema = z.object({

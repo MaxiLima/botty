@@ -1,7 +1,17 @@
 // Transcript blocks rendered by slash commands (and the welcome banner).
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { AiDecision, Interaction, Person, SourceCheckRow, Task, TickLogRow } from '@botty/shared';
+import type {
+  AiDecision,
+  CostCategory,
+  CostsReport,
+  Interaction,
+  Person,
+  SourceCheckRow,
+  Task,
+  TickLogRow,
+} from '@botty/shared';
+import { COST_CATEGORIES, COST_CATEGORY_LABELS } from '@botty/shared';
 import { COMMANDS, type PanelData } from './commands.js';
 import { priorityColor, priorityLabel, shortDate, timeAgo } from './format.js';
 import { renderMarkdown } from './markdown.js';
@@ -172,6 +182,97 @@ function InspectorBody({
   );
 }
 
+const COST_CATEGORY_INK: Record<CostCategory, string | undefined> = {
+  chat: 'magenta',
+  intake: 'green',
+  proactive: 'yellow',
+  resolution: 'blue',
+  briefing: 'cyan',
+  other: undefined,
+};
+
+function fmtUsd(v: number): string {
+  if (v >= 1000) return `$${Math.round(v).toLocaleString('en-US')}`;
+  if (v >= 1) return `$${v.toFixed(2)}`;
+  if (v >= 0.01) return `$${v.toPrecision(2)}`; // $0.73, $0.50, $0.055
+  if (v > 0) return `$${parseFloat(v.toPrecision(2))}`; // $0.0007
+  return '$0.00';
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
+  return String(n);
+}
+
+function CostsBody({ report, width }: { report: CostsReport; width: number }) {
+  const { today, last7d, last30d, allTime } = report.windows;
+  if (allTime.totals.calls === 0) {
+    return <Text dimColor>no LLM usage recorded yet — costs will appear as botty works</Text>;
+  }
+  const w = last30d;
+  const total = w.totals.costUsd;
+  const categories = COST_CATEGORIES.map((c) => ({ c, t: w.byCategory[c] }))
+    .filter((x): x is { c: CostCategory; t: NonNullable<typeof x.t> } => x.t !== undefined && x.t.calls > 0)
+    .sort((a, b) => b.t.costUsd - a.t.costUsd);
+  const meterW = 14;
+  return (
+    <>
+      <Text>
+        <Text dimColor>today </Text>
+        <Text bold>{fmtUsd(today.totals.costUsd)}</Text>
+        <Text dimColor> · 7d </Text>
+        <Text bold>{fmtUsd(last7d.totals.costUsd)}</Text>
+        <Text dimColor> · 30d </Text>
+        <Text bold>{fmtUsd(last30d.totals.costUsd)}</Text>
+        <Text dimColor> · all time </Text>
+        <Text bold>{fmtUsd(allTime.totals.costUsd)}</Text>
+      </Text>
+      <Text bold>by activity — last 30 days</Text>
+      {categories.map(({ c, t }) => {
+        const share = total > 0 ? t.costUsd / total : 0;
+        const filled = total > 0 ? Math.max(t.costUsd > 0 ? 1 : 0, Math.round(share * meterW)) : 0;
+        return (
+          <Text key={c}>
+            {'  '}
+            <Text color={COST_CATEGORY_INK[c]}>{fit(COST_CATEGORY_LABELS[c].toLowerCase(), 22)}</Text>
+            <Text color={COST_CATEGORY_INK[c]}>{'▮'.repeat(filled)}</Text>
+            <Text dimColor>{'·'.repeat(meterW - filled)}</Text>
+            <Text> {fmtUsd(t.costUsd).padStart(9)}</Text>
+            <Text dimColor>
+              {' '}
+              {`${fmtTokens(t.inputTokens)} in · ${fmtTokens(t.outputTokens)} out · ${t.calls} calls`}
+            </Text>
+          </Text>
+        );
+      })}
+      {categories.length === 0 && <Text dimColor>  no calls in the last 30 days</Text>}
+      <Text bold>by model — last 30 days</Text>
+      {w.byModel.map((m) => (
+        <Text key={m.model}>
+          {'  '}
+          <Text color="cyan">{fit(m.model, Math.min(26, Math.max(16, width - 46)))}</Text>
+          <Text> {(m.priced ? fmtUsd(m.costUsd) : '—').padStart(9)}</Text>
+          <Text dimColor>
+            {' '}
+            {`${fmtTokens(m.inputTokens)} in · ${fmtTokens(m.outputTokens)} out · ${m.calls} calls`}
+            {m.priced ? '' : ' · no pricing'}
+          </Text>
+        </Text>
+      ))}
+      {w.byModel.length === 0 && <Text dimColor>  none</Text>}
+      {w.totals.unpricedCalls > 0 && (
+        <Text color="yellow">
+          {w.totals.unpricedCalls} call{w.totals.unpricedCalls === 1 ? '' : 's'} counted at $0 (model
+          without a pricing entry)
+        </Text>
+      )}
+      <Text dimColor>estimated at API list prices — botty runs on your subscription, not billed</Text>
+      <Text dimColor>daily chart & window switcher live in the web app's Costs page</Text>
+    </>
+  );
+}
+
 function HelpBody() {
   return (
     <>
@@ -252,6 +353,12 @@ export function Panel({ panel, columns }: { panel: PanelData; columns: number })
       return (
         <Frame title="inspector">
           <InspectorBody {...panel} width={width} />
+        </Frame>
+      );
+    case 'costs':
+      return (
+        <Frame title="costs">
+          <CostsBody report={panel.report} width={width} />
         </Frame>
       );
     case 'config':

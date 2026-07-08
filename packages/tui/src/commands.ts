@@ -2,6 +2,7 @@ import {
   CONFIG_FILE_NAMES,
   type AiDecision,
   type ConfigFileName,
+  type CostsReport,
   type Interaction,
   type Person,
   type SourceCheckRow,
@@ -19,6 +20,7 @@ export type PanelData =
   | { type: 'people'; people: Person[] }
   | { type: 'person'; person: Person; interactions: Interaction[]; tasks: Task[] }
   | { type: 'inspector'; decisions: AiDecision[]; ticks: TickLogRow[]; checks: SourceCheckRow[] }
+  | { type: 'costs'; report: CostsReport }
   | { type: 'config'; name: string; content: string }
   | { type: 'health'; ok: boolean; version: string; mode: string; dbPath: string; baseUrl: string };
 
@@ -74,6 +76,14 @@ export const COMMANDS: Command[] = [
     run: async (api) => {
       const [d, t, c] = await Promise.all([api.decisions({ limit: 8 }), api.ticks(5), api.sourceChecks(5)]);
       return { panel: { type: 'inspector', decisions: d.decisions, ticks: t.ticks, checks: c.checks } };
+    },
+  },
+  {
+    name: 'costs',
+    description: 'LLM spend by activity & model',
+    run: async (api) => {
+      const { report } = await api.costs();
+      return { panel: { type: 'costs', report } };
     },
   },
   {

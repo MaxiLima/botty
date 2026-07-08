@@ -6,6 +6,7 @@ import { ChatPage } from './pages/ChatPage.js';
 import { TasksPage } from './pages/TasksPage.js';
 import { PeoplePage } from './pages/PeoplePage.js';
 import { InspectorPage } from './pages/InspectorPage.js';
+import { CostsPage } from './pages/CostsPage.js';
 import { ConfigPage } from './pages/ConfigPage.js';
 import './styles/shell.css';
 
@@ -17,7 +18,8 @@ const NAV: { page: Page; label: string; glyph: string; key: string }[] = [
   { page: 'tasks', label: 'Tasks', glyph: '▤', key: '2' },
   { page: 'people', label: 'People', glyph: '◭', key: '3' },
   { page: 'inspector', label: 'Inspector', glyph: '◉', key: '4' },
-  { page: 'config', label: 'Config', glyph: '⌘', key: '5' },
+  { page: 'costs', label: 'Costs', glyph: '◗', key: '5' },
+  { page: 'config', label: 'Config', glyph: '⌘', key: '6' },
 ];
 
 const PAGE_TITLES: Record<Page, string> = {
@@ -25,6 +27,7 @@ const PAGE_TITLES: Record<Page, string> = {
   tasks: 'Tasks',
   people: 'People',
   inspector: 'Inspector',
+  costs: 'Costs',
   config: 'Config',
 };
 
@@ -92,6 +95,7 @@ export function App() {
           {route === 'tasks' && <TasksPage />}
           {route === 'people' && <PeoplePage />}
           {route === 'inspector' && <InspectorPage />}
+          {route === 'costs' && <CostsPage />}
           {route === 'config' && <ConfigPage />}
         </div>
       </main>

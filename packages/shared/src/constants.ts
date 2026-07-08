@@ -16,6 +16,52 @@ export const DEFAULT_MODELS: Record<LlmTask, string> = {
   resolution: 'claude-sonnet-5',
 };
 
+// ---------- costs ----------
+
+/** Activity buckets for the costs report, derived from ai_decisions.kind. */
+export const COST_CATEGORIES = ['chat', 'intake', 'proactive', 'resolution', 'briefing', 'other'] as const;
+export type CostCategory = (typeof COST_CATEGORIES)[number];
+
+export const COST_CATEGORY_LABELS: Record<CostCategory, string> = {
+  chat: 'Chat',
+  intake: 'Source intake',
+  proactive: 'Proactive loop',
+  resolution: 'Resolution sweep',
+  briefing: 'Briefings & summaries',
+  other: 'Other',
+};
+
+/** ai_decisions.kind → category. Chat records as 'chat_turn'; structured kinds match LlmTask. */
+export const COST_CATEGORY_BY_KIND: Record<string, CostCategory> = {
+  chat_turn: 'chat',
+  classification: 'intake',
+  extraction: 'intake',
+  judgment: 'proactive',
+  resolution: 'resolution',
+  briefing: 'briefing',
+};
+
+export interface ModelPricing {
+  /** USD per million input tokens. */
+  inputPerMTok: number;
+  /** USD per million output tokens. */
+  outputPerMTok: number;
+}
+
+/**
+ * Claude API list prices (USD/MTok). botty runs on a subscription via the Agent
+ * SDK, so the costs report prices what the recorded usage *would* cost at API
+ * rates. Extend/override per model via the `llm.pricing` settings key.
+ */
+export const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
+  'claude-sonnet-5': { inputPerMTok: 3, outputPerMTok: 15 },
+  'claude-sonnet-4-6': { inputPerMTok: 3, outputPerMTok: 15 },
+  'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
+  'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25 },
+  'claude-opus-4-7': { inputPerMTok: 5, outputPerMTok: 25 },
+  'claude-opus-4-6': { inputPerMTok: 5, outputPerMTok: 25 },
+};
+
 export const HEARTBEAT_DEFAULTS = {
   tickIntervalMin: 20,
   /**

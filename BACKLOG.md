@@ -53,8 +53,13 @@ images/quoting, proactive loop, working-hours hard gate, Botty-branded notificat
 
 - Nudge cards are client-store only — lost on page reload. Add a notification-history read from
   `proactive_log` and interleave into chat history.
-- **Usage panel**: tokens/latency per call are already in `ai_decisions`; surface daily totals
-  per task-kind in the UI (pairs with the working-hours token-saving goal).
+- ~~**Usage panel**: tokens/latency per call are already in `ai_decisions`; surface daily totals
+  per task-kind in the UI (pairs with the working-hours token-saving goal).~~ **shipped
+  2026-07-08** as the Costs report: `GET /api/costs` prices the `ai_decisions` rollup at
+  API list rates (overridable via the `llm.pricing` setting), split by activity
+  (chat/intake/proactive/resolution/briefing) and model over today/7d/30d/all-time windows;
+  web **Costs** page (stat tiles, 30-day stacked daily chart, breakdown tables) and TUI
+  `/costs` panel.
 - ~~Funnel outcome is parsed client-side from `raw_log.body`; the `/api/raw-log` response should
   carry it as a field.~~ **shipped 2026-07-07**: `outcome` is a typed field on RawLog rows
   (json_extract in `Db.listRawLog`); the Inspector reads it directly.
