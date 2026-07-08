@@ -1,0 +1,100 @@
+/* ── config editors ──────────────────────────────────────────────────────── */
+
+.config-page {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px 20px;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+}
+@media (max-width: 1100px) {
+  .config-page {
+    overflow-y: auto;
+  }
+  .config-grid {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .config-textarea {
+    min-height: 300px;
+  }
+}
+
+.config-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.config-editor.dirty {
+  border-color: var(--amber);
+}
+
+.config-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.config-head h2 {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--accent-hi);
+}
+.config-head .muted {
+  font-size: 10.5px;
+  display: block;
+}
+.config-head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.config-head-right .muted {
+  font-size: 10px;
+  font-family: var(--mono);
+}
+
+.config-textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: none;
+  background: #101013;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 12px 14px;
+  color: #d6d3e3;
+}
+.config-textarea:focus {
+  outline: none;
+}
+
+.warning-list {
+  list-style: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.05);
+  flex: none;
+}

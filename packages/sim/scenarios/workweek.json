@@ -1,0 +1,425 @@
+{
+  "name": "workweek",
+  "description": "A realistic Monday for Maxo on the Acme fraud squad — exercises every funnel path.",
+  "people": [
+    { "name": "Marian", "slackHandle": "@marian", "email": "marian@acme.example" },
+    { "name": "Sofi", "slackHandle": "@sofi", "email": "sofi@acme.example" },
+    { "name": "Diego", "slackHandle": "@diego", "email": "diego@acme.example" },
+    { "name": "Caro", "slackHandle": "@caro", "email": "caro@acme.example" },
+    { "name": "Rodrigo", "slackHandle": "@rodrigo", "email": "rodrigo@acme.example" },
+    { "name": "Fer", "slackHandle": "@fer", "email": "fer@vendorpay.io" }
+  ],
+  "events": [
+    {
+      "atMinute": 0,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Hola! Can you review the fraud-rules PR #482 before EOD? It's blocking the release del viernes.",
+      "threadRef": "T-1001",
+      "meta": { "externalId": "slack-marian-pr482" }
+    },
+    {
+      "atMinute": 3,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "jaja buenísimo 😂"
+    },
+    {
+      "atMinute": 5,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "Sprint planning — Fraud squad",
+      "meta": {
+        "startAtMinute": 70,
+        "durationMin": 60,
+        "attendees": ["marian@acme.example", "sofi@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "location": "Sala Ombú / Meet"
+      }
+    },
+    {
+      "atMinute": 7,
+      "source": "jira",
+      "kind": "issue",
+      "actor": { "displayName": "Sofi Blanco", "email": "sofi@acme.example" },
+      "text": "FRAUD-1432: Chargeback spike on BR marketplace — investigate velocity rule R-77",
+      "meta": { "key": "FRAUD-1432", "status": "In Progress", "url": "https://jira.acme.example/browse/FRAUD-1432" }
+    },
+    {
+      "atMinute": 9,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "FYI team: la deploy window de checkout se movió a las 14:00 por el freeze de pagos.",
+      "threadRef": "C-checkout-eng"
+    },
+    {
+      "atMinute": 12,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "Subject: Q2 chargeback deck\n\nMaxo — can you send me the Q2 chargeback report deck by Thursday? Lo necesito para la review con el director. Con los números de BR y AR alcanza.",
+      "threadRef": "M-8801"
+    },
+    {
+      "atMinute": 15,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "newsletter@acme.example", "displayName": "Acme Engineering Weekly" },
+      "text": "Subject: Acme Engineering Weekly #204\n\nEsta semana: cómo Shipping bajó p99 40%, nuevo cluster de GPUs en Fury, charlas del tech-summit, y más."
+    },
+    {
+      "atMinute": 18,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "Estoy blocked on the sandbox creds del risk-scorer, can you share the vault path cuando tengas un min?",
+      "threadRef": "T-1002"
+    },
+    {
+      "atMinute": 21,
+      "source": "github",
+      "kind": "pr",
+      "actor": { "handle": "sofiblanco", "displayName": "Sofi Blanco" },
+      "text": "Review requested: acme-example/fraud-rules#482 — Add velocity check for BR high-risk sellers",
+      "meta": { "repo": "acme-example/fraud-rules", "number": 482, "state": "open", "url": "https://github.com/acme-example/fraud-rules/pull/482" }
+    },
+    {
+      "atMinute": 24,
+      "source": "slack",
+      "kind": "mention",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "@maxo heads up: we decided to go with the streaming approach for the risk scorer. ADR-19 está actualizado, cualquier cosa comentá ahí.",
+      "threadRef": "C-fraud-core"
+    },
+    {
+      "atMinute": 27,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Hola! Can you review the fraud-rules PR #482 before EOD? It's blocking the release del viernes.",
+      "threadRef": "T-1001",
+      "meta": { "externalId": "slack-marian-pr482", "note": "duplicate delivery of the minute-0 DM" }
+    },
+    {
+      "atMinute": 30,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@fer", "displayName": "Fer Acosta (VendorPay)" },
+      "text": "Hola Maxo! Te paso la factura de junio de VendorPay, avisame si la ves ok."
+    },
+    {
+      "atMinute": 33,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "Can you believe River lost again anoche?? Qué partido horrible por favor"
+    },
+    {
+      "atMinute": 36,
+      "source": "jira",
+      "kind": "issue",
+      "actor": { "displayName": "Marian Gutiérrez", "email": "marian@acme.example" },
+      "text": "FRAUD-1440: Tune device-fingerprint threshold for AR — false positives up 12%",
+      "meta": { "key": "FRAUD-1440", "status": "To Do", "url": "https://jira.acme.example/browse/FRAUD-1440" }
+    },
+    {
+      "atMinute": 40,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "1:1 Marian ✕ Maxo",
+      "meta": {
+        "startAtMinute": 250,
+        "durationMin": 30,
+        "attendees": ["marian@acme.example", "yo@maxolabs.io"],
+        "location": "Meet"
+      }
+    },
+    {
+      "atMinute": 44,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "I'll send you the latency doc tomorrow — quiero tu feedback antes del refinement del miércoles.",
+      "threadRef": "T-1003"
+    },
+    {
+      "atMinute": 48,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@rodrigo", "displayName": "Rodrigo Silva" },
+      "text": "gente, ¿alguien sabe si anda el VPN? a mí me tira timeout desde las 9",
+      "threadRef": "C-it-helpdesk"
+    },
+    {
+      "atMinute": 52,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "billing@aws.amazon.com", "displayName": "AWS Billing" },
+      "text": "Subject: AWS Cost Digest — week 27\n\nYour estimated charges for the fraud-sandbox account: USD 1,243.18 (+4% week over week). Top service: SageMaker."
+    },
+    {
+      "atMinute": 56,
+      "source": "github",
+      "kind": "pr",
+      "actor": { "handle": "diegopaz", "displayName": "Diego Paz" },
+      "text": "Review requested: acme-example/risk-scorer#91 — Bump fraud model artifact to v3.2 and wire shadow mode",
+      "meta": { "repo": "acme-example/risk-scorer", "number": 91, "state": "open", "url": "https://github.com/acme-example/risk-scorer/pull/91" }
+    },
+    {
+      "atMinute": 60,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Also — remind me to loop in legal before we ship the new KYC flow, no quiero sorpresas con compliance.",
+      "threadRef": "T-1004"
+    },
+    {
+      "atMinute": 65,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "👍👍"
+    },
+    {
+      "atMinute": 70,
+      "source": "slack",
+      "kind": "mention",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "@maxo can you take a look at the checkout latency dashboard when you get a chance? Vemos algo raro post-deploy.",
+      "threadRef": "C-checkout-eng"
+    },
+    {
+      "atMinute": 78,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "sofi@acme.example", "displayName": "Sofi Blanco" },
+      "text": "Fraud sync semanal",
+      "meta": {
+        "startAtMinute": 320,
+        "durationMin": 45,
+        "attendees": ["sofi@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "location": "Sala Ceibo"
+      }
+    },
+    {
+      "atMinute": 85,
+      "source": "jira",
+      "kind": "issue",
+      "actor": { "displayName": "Diego Paz", "email": "diego@acme.example" },
+      "text": "FRAUD-1451: Manual review queue overflowing — false positives from rule R-77 flooding ops",
+      "meta": { "key": "FRAUD-1451", "status": "Blocked", "url": "https://jira.acme.example/browse/FRAUD-1451" }
+    },
+    {
+      "atMinute": 92,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "jaja sí, tal cual, un desastre"
+    },
+    {
+      "atMinute": 100,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "Please prioritize the R-77 rollback plan hoy — el sitio de BR está gritando y ops no da abasto con la cola de revisión.",
+      "threadRef": "T-1005"
+    },
+    {
+      "atMinute": 108,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "quick question — lunch at 13 works for you? hay lugar nuevo de milanesas en la esquina"
+    },
+    {
+      "atMinute": 115,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "team: agreed to move the retro to Friday 11am, así no pisa la demo. Marian approved.",
+      "threadRef": "C-fraud-core"
+    },
+    {
+      "atMinute": 122,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@fer", "displayName": "Fer Acosta (VendorPay)" },
+      "text": "Reminder: VendorPay hace mantenimiento esta noche 23:00-01:00, el sandbox va a estar caído."
+    },
+    {
+      "atMinute": 130,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "status: sigo blocked on SRE para el quota bump del scorer, apenas lo aprueben corro el backfill",
+      "threadRef": "C-fraud-core"
+    },
+    {
+      "atMinute": 138,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "Waiting on your review de los comments en FRAUD-1432, avisame cuando puedas así cierro el análisis.",
+      "threadRef": "T-1006"
+    },
+    {
+      "atMinute": 145,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "mirá este meme de los contracargos jajaja te vas a morir"
+    },
+    {
+      "atMinute": 155,
+      "source": "slack",
+      "kind": "mention",
+      "actor": { "handle": "@rodrigo", "displayName": "Rodrigo Silva" },
+      "text": "@maxo bienvenido al canal #asado-viernes 🍖 traé algo para la parrilla",
+      "threadRef": "C-asado-viernes"
+    },
+    {
+      "atMinute": 170,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Before the meeting, can you pull the Q2 fraud KPIs? Los quiero en pantalla para sprint planning.",
+      "threadRef": "T-1007"
+    },
+    {
+      "atMinute": 185,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "che, can you approve my access request al fraud dashboard? lo pedí por el portal ayer"
+    },
+    {
+      "atMinute": 200,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "diego@acme.example", "displayName": "Diego Paz" },
+      "text": "Demo interna — Risk Scorer v3 shadow mode",
+      "meta": {
+        "startAtMinute": 430,
+        "durationMin": 30,
+        "attendees": ["diego@acme.example", "sofi@acme.example", "caro@acme.example", "yo@maxolabs.io"],
+        "location": "Meet"
+      }
+    },
+    {
+      "atMinute": 215,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "ok"
+    },
+    {
+      "atMinute": 230,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "FYI: signed off on the VendorPay contract renewal con Fer hoy a la mañana, ya está en legal.",
+      "threadRef": "T-1008"
+    },
+    {
+      "atMinute": 260,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "asap: el release está frenado por el PR #482 — ¿estado? Si no llega hoy aviso a release management.",
+      "threadRef": "T-1001"
+    },
+    {
+      "atMinute": 300,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "I'll own the postmortem doc de la caída del scorer de anoche, te agrego como reviewer.",
+      "threadRef": "T-1009"
+    }
+  ],
+  "templates": [
+    {
+      "id": "ww-marian-urgent",
+      "label": "Marian: urgent prod ping",
+      "event": {
+        "source": "slack",
+        "kind": "dm",
+        "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+        "text": "Maxo — prod alert en fraud-rules, can you jump on a call in 10? Es urgente.",
+        "threadRef": "T-INJ-1"
+      }
+    },
+    {
+      "id": "ww-sofi-email",
+      "label": "Sofi: urgent email (needs action)",
+      "event": {
+        "source": "gmail",
+        "kind": "email",
+        "actor": { "email": "sofi@acme.example", "displayName": "Sofi Blanco" },
+        "text": "Subject: [URGENTE] Rollback plan R-77\n\nPlease send me the rollback plan for R-77 before 15:00 — legal lo está pidiendo por el spike de contracargos."
+      }
+    },
+    {
+      "id": "ww-diego-social",
+      "label": "Diego: social noise",
+      "event": {
+        "source": "slack",
+        "kind": "dm",
+        "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+        "text": "jajaja qué golazo se comió el scorer con esa transacción, después te cuento"
+      }
+    },
+    {
+      "id": "ww-gcal-soon",
+      "label": "Meeting in 30 min (Tier-1 attendee)",
+      "event": {
+        "source": "gcal",
+        "kind": "event",
+        "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+        "text": "Incident review — chargeback spike BR",
+        "meta": {
+          "startAtMinute": 30,
+          "durationMin": 30,
+          "attendees": ["marian@acme.example", "sofi@acme.example", "yo@maxolabs.io"],
+          "location": "Meet"
+        }
+      }
+    },
+    {
+      "id": "ww-jira-new",
+      "label": "New Jira issue assigned",
+      "event": {
+        "source": "jira",
+        "kind": "issue",
+        "actor": { "displayName": "Sofi Blanco", "email": "sofi@acme.example" },
+        "text": "FRAUD-1460: Approval rate drop on MX — correlate with rule deploys",
+        "meta": { "key": "FRAUD-1460", "status": "To Do", "url": "https://jira.acme.example/browse/FRAUD-1460" }
+      }
+    },
+    {
+      "id": "ww-gh-pr",
+      "label": "GitHub PR review requested",
+      "event": {
+        "source": "github",
+        "kind": "pr",
+        "actor": { "handle": "diegopaz", "displayName": "Diego Paz" },
+        "text": "Review requested: acme-example/fraud-rules#501 — Hotfix: cap velocity window at 24h",
+        "meta": { "repo": "acme-example/fraud-rules", "number": 501, "state": "open", "url": "https://github.com/acme-example/fraud-rules/pull/501" }
+      }
+    },
+    {
+      "id": "ww-tier2-dm",
+      "label": "Caro (Tier-2): DM with an ask",
+      "event": {
+        "source": "slack",
+        "kind": "dm",
+        "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+        "text": "can you re-run el job de reconciliación de checkout? me quedó colgado"
+      }
+    }
+  ]
+}

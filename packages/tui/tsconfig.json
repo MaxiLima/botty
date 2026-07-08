@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "paths": { "@botty/shared": ["../shared/src/index.ts"] }
+  },
+  "include": ["src", "test"]
+}

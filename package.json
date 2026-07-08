@@ -1,0 +1,17 @@
+{
+  "name": "botty",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=22.12" },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "dev:agent": "npm run dev -w @botty/agent",
+    "dev:sim": "npm run dev -w @botty/sim",
+    "dev:web": "npm run dev -w @botty/web",
+    "dev:tui": "npm run dev -w @botty/tui"
+  }
+}
