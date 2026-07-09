@@ -51,6 +51,12 @@ images/quoting, proactive loop, working-hours hard gate, Botty-branded notificat
 
 ## P2 — known seams (from the build, all minor)
 
+- **Settings UI for model routing & pricing**: `llm.models` (task→model) and `llm.pricing`
+  (USD/MTok overrides) are settings-only today — editable via `PUT /api/settings`, no UI.
+  Both API clients already expose `settings()`/`patchSettings()`; add a "Models" section to
+  the web Config page (dropdown per LlmTask + pricing rows) and surface the active routing
+  read-only in the TUI. Zero backend changes needed.
+
 - Nudge cards are client-store only — lost on page reload. Add a notification-history read from
   `proactive_log` and interleave into chat history.
 - ~~**Usage panel**: tokens/latency per call are already in `ai_decisions`; surface daily totals
