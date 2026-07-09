@@ -91,29 +91,47 @@ async function* withInactivityTimeout(
   ms: number,
 ): AsyncGenerator<SdkMessageLike> {
   const it = handle[Symbol.asyncIterator]();
-  while (true) {
-    let timer: NodeJS.Timeout | undefined;
+  let completedNormally = false;
+  let interrupted = false;
+  const interruptOnce = async () => {
+    if (interrupted) return;
+    interrupted = true;
     try {
-      const res = await Promise.race([
-        it.next(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new StreamTimeoutError()), ms);
-        }),
-      ]);
-      if (res.done) return;
-      yield res.value;
-    } catch (err) {
-      if (err instanceof StreamTimeoutError) {
-        try {
-          await handle.interrupt?.();
-        } catch {
-          /* best effort */
-        }
-      }
-      throw err;
-    } finally {
-      if (timer) clearTimeout(timer);
+      await handle.interrupt?.();
+    } catch {
+      /* best effort */
     }
+  };
+  try {
+    while (true) {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const res = await Promise.race([
+          it.next(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new StreamTimeoutError()), ms);
+          }),
+        ]);
+        if (res.done) {
+          completedNormally = true;
+          return;
+        }
+        yield res.value;
+      } catch (err) {
+        if (err instanceof StreamTimeoutError) await interruptOnce();
+        throw err;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+  } finally {
+    // Any abnormal exit — the stream itself threw (e.g. subprocess crash) or
+    // the consumer tore the generator down early (e.g. a caller that throws
+    // on m.is_error mid-loop, like runOnce) — leaves the underlying SDK
+    // handle's subprocess running unless we tell it to stop. Best-effort and
+    // idempotent so it never fires on normal completion or double-fires
+    // after the timeout path above already interrupted.
+    if (!completedNormally) await interruptOnce();
   }
 }
 

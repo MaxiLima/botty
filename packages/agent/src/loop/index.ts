@@ -42,6 +42,18 @@ export function createLoop(ctx: AgentContext): Loop {
   let started = false;
   let tickTimer: NodeJS.Timeout | null = null;
   let sweepTimer: NodeJS.Timeout | null = null;
+  /**
+   * Bumped every time a tick/sweep chain is (re-)armed (start(), or a
+   * heartbeat.md hot-reload). A fired timer's callback captures the epoch it
+   * was armed under and re-checks it both before running and before
+   * re-arming — so a config reload that lands mid-execution (clearTimeout on
+   * an already-fired handle is a no-op) still leaves exactly one live chain:
+   * the stale chain notices it's been superseded and lets itself die instead
+   * of re-arming a second one. See packages/agent/src/loop/index.ts history
+   * for the duplicate-chain bug this guards against.
+   */
+  let tickEpoch = 0;
+  let sweepEpoch = 0;
   let unsubscribeConfig: (() => void) | null = null;
   const briefTimers = new Map<BriefKind, NodeJS.Timeout>();
   /** Serializes ticks so run-now never overlaps a scheduled tick. */
@@ -64,6 +76,7 @@ export function createLoop(ctx: AgentContext): Loop {
 
   function scheduleNextTick(): void {
     if (!started) return;
+    const epoch = ++tickEpoch;
     const hb = config.heartbeat();
     const intervalMs = Math.max(1, hb.tickIntervalMin) * 60_000;
     // Off hours: no point waking on the normal cadence — sleep until the
@@ -75,12 +88,18 @@ export function createLoop(ctx: AgentContext): Loop {
       ? intervalMs
       : Math.min(intervalMs, msUntilNextTime(new Date(), hb.workingHours.start));
     tickTimer = setTimeout(async () => {
+      // Stopped, or a heartbeat.md reload armed a newer chain while we were
+      // waiting to fire: let this chain die instead of running/re-arming.
+      if (!started || epoch !== tickEpoch) return;
       try {
         // Working hours / quiet hours / inactive days are enforced inside runTick.
         await execTick('schedule');
       } catch (err) {
         console.error('[loop] tick failed:', (err as Error).message);
       }
+      // Re-check after the (multi-second) LLM call: stop() or a config
+      // reload may have superseded this chain while it was in flight.
+      if (!started || epoch !== tickEpoch) return;
       scheduleNextTick();
     }, delayMs);
   }
@@ -98,6 +117,7 @@ export function createLoop(ctx: AgentContext): Loop {
 
   function scheduleSweep(): void {
     if (!started) return;
+    const epoch = ++sweepEpoch;
     const hb = config.heartbeat();
     const intervalMs = Math.max(1, hb.resolutionSweepIntervalMin) * 60_000;
     // Same off-hours strategy as ticks: sleep until the window reopens (capped
@@ -106,6 +126,9 @@ export function createLoop(ctx: AgentContext): Loop {
       ? intervalMs
       : Math.min(intervalMs, msUntilNextTime(new Date(), hb.workingHours.start));
     sweepTimer = setTimeout(async () => {
+      // Stopped, or a heartbeat.md reload armed a newer chain while we were
+      // waiting to fire: let this chain die instead of running/re-arming.
+      if (!started || epoch !== sweepEpoch) return;
       try {
         // HARD working-hours gate re-checked at fire time: off-hours ⇒ no LLM.
         if (isWithinWorkingHours(new Date().toISOString(), config.heartbeat())) {
@@ -119,6 +142,9 @@ export function createLoop(ctx: AgentContext): Loop {
       } catch (err) {
         console.error('[loop] resolution sweep failed:', (err as Error).message);
       }
+      // Re-check after the (up to 5x LLM call) sweep: stop() or a config
+      // reload may have superseded this chain while it was in flight.
+      if (!started || epoch !== sweepEpoch) return;
       scheduleSweep();
     }, delayMs);
   }

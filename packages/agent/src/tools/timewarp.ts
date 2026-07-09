@@ -9,6 +9,7 @@
  *
  * Stop the agent before running this (WAL single-writer), or accept a brief lock wait.
  */
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { loadEnv } from '../env.js';
 
@@ -26,38 +27,69 @@ const SHIFTS: Record<string, string[]> = {
   source_check_log: ['checked_at'],
 };
 
+/**
+ * Shift a column's timestamps by `@shift` while preserving each stored value's
+ * original shape:
+ *  - date-only values (`YYYY-MM-DD`, e.g. `tasks.due_date`) stay date-only —
+ *    shifting them into a full datetime would fabricate a fake time-of-day and
+ *    change DUE_SOON-style semantics downstream.
+ *  - datetime values keep their precision: millisecond-precision values
+ *    (`.SSS`, what `nowIso()` always writes) keep milliseconds; whole-second
+ *    values stay whole-second.
+ * Distinguished per-row (not per-column) since `due_date` in particular can
+ * hold either shape depending on how the task was created.
+ */
+function shiftColumnSql(table: string, col: string): string {
+  // NOTE: the modifier is applied directly in strftime()/date() rather than via
+  // a nested datetime(col, ?) — datetime() truncates to whole seconds, which
+  // would silently zero out milliseconds before strftime ever sees them.
+  return `
+    UPDATE ${table}
+    SET ${col} = CASE
+      WHEN length(${col}) = 10 THEN date(${col}, @shift)
+      WHEN instr(${col}, '.') > 0 THEN strftime('%Y-%m-%dT%H:%M:%fZ', ${col}, @shift)
+      ELSE strftime('%Y-%m-%dT%H:%M:%SZ', ${col}, @shift)
+    END
+    WHERE ${col} IS NOT NULL
+  `;
+}
+
+/** Apply the timewarp shift to every configured column. Returns total rows touched. */
+export function applyTimewarp(db: Database.Database, hours: number): number {
+  const modifier = `-${hours} hours`;
+  let total = 0;
+  const tx = db.transaction(() => {
+    for (const [table, cols] of Object.entries(SHIFTS)) {
+      for (const col of cols) {
+        const r = db.prepare(shiftColumnSql(table, col)).run({ shift: modifier });
+        total += r.changes;
+      }
+    }
+  });
+  tx();
+  return total;
+}
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i !== -1 ? process.argv[i + 1] : undefined;
 }
 
-const hours = Number(arg('hours') ?? 0) + Number(arg('days') ?? 0) * 24;
-if (!hours || Number.isNaN(hours)) {
-  console.error('usage: timewarp --hours N | --days N [--db path]');
-  process.exit(1);
-}
-
-const dbPath = arg('db') ?? loadEnv().dbPath;
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-
-// ISO strings sort lexicographically, so a uniform shift preserves all orderings.
-const modifier = `-${hours} hours`;
-let total = 0;
-const tx = db.transaction(() => {
-  for (const [table, cols] of Object.entries(SHIFTS)) {
-    for (const col of cols) {
-      const r = db
-        .prepare(
-          `UPDATE ${table}
-           SET ${col} = strftime('%Y-%m-%dT%H:%M:%SZ', datetime(${col}, ?))
-           WHERE ${col} IS NOT NULL`,
-        )
-        .run(modifier);
-      total += r.changes;
-    }
+// Only run the CLI when this file is executed directly (not when imported by tests).
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
+  const hours = Number(arg('hours') ?? 0) + Number(arg('days') ?? 0) * 24;
+  if (!hours || Number.isNaN(hours)) {
+    console.error('usage: timewarp --hours N | --days N [--db path]');
+    process.exit(1);
   }
-});
-tx();
-console.log(`timewarp: advanced time by ${hours}h (${total} timestamp updates) in ${dbPath}`);
-db.close();
+
+  const dbPath = arg('db') ?? loadEnv().dbPath;
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+
+  // ISO strings sort lexicographically, so a uniform shift preserves all orderings.
+  const total = applyTimewarp(db, hours);
+  console.log(`timewarp: advanced time by ${hours}h (${total} timestamp updates) in ${dbPath}`);
+  db.close();
+}

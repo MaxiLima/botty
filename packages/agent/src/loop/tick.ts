@@ -87,8 +87,12 @@ export async function runTick(
     const candidates = gatherCandidates(db, now);
 
     // 5. layer 1 — rules filter (pure, no LLM)
+    // Lookback must cover min_gap_between_nudges_min, or a gap configured above
+    // 24h silently caps at 24h (the last nudge falls out of the window and the
+    // gate sees no prior nudge at all). See docs/specs/loop.md §5 gate 6.
+    const lookbackMs = Math.max(24 * 3_600_000, hb.minGapBetweenNudgesMin * 60_000);
     const recentSurfaces = db.surfacesSince(
-      new Date(Date.parse(now) - 24 * 3_600_000).toISOString(),
+      new Date(Date.parse(now) - lookbackMs).toISOString(),
     );
     const mutedUntil: Record<string, string | null> = {};
     for (const p of db.listPeople()) mutedUntil[p.id] = p.mutedUntil;

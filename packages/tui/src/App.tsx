@@ -183,8 +183,8 @@ export function App({ config }: { config: TuiConfig }) {
     }
     setPending((cur) => (cur && cur.turnId !== p.turnId ? cur : null));
   });
-  // Only routes.ts broadcasts the full open board; ingest/loop send all-status
-  // or touched-subset lists — count opens, mirroring the web app's store.
+  // tasks.updated is always a full board snapshot (see WsEventSchema in
+  // shared/src/api.ts) — count opens, mirroring the web app's store.
   useWsEvent('tasks.updated', (p) => setTaskCount(p.tasks.filter((t) => t.status === 'open').length));
   useWsEvent('notification', (p) => {
     pushItem({ kind: 'nudge', message: p.message, nkind: p.kind, score: p.score });

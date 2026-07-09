@@ -150,10 +150,13 @@ export function createChat(deps: {
     db.sealSession(session.id, summary);
   }
 
-  async function sealSession(session: SessionMeta): Promise<void> {
+  function sealSession(session: SessionMeta): void {
     // Flip status first — the single-active-session invariant must never wait on an LLM.
+    // Summary is deferred through the turn queue, same as the idle-seal path in
+    // ensureSession below, so callers (explicit /api/chat/seal, idle timeout) never
+    // block on a `structured` LLM call.
     db.sealSession(session.id, null);
-    await summarizeSession(session);
+    queueTurn(() => summarizeSession(session)).catch(() => {});
   }
 
   /** Get the active session, sealing it first (summary fills in async) if it idled out. */
@@ -164,11 +167,10 @@ export function createChat(deps: {
       if (idleMs <= idleSealMs) return active;
       // Everything from the activeSession() read to createSession() below is
       // synchronous, so a concurrent send can't double-seal or create a second
-      // active session. The LLM summary lands via the turn queue — before the
-      // next assistant turn builds its system prompt — instead of blocking the
-      // message POST for the duration of a summarization call.
-      db.sealSession(active.id, null);
-      queueTurn(() => summarizeSession(active)).catch(() => {});
+      // active session. sealSession() defers the LLM summary via the turn queue —
+      // it lands before the next assistant turn builds its system prompt — instead
+      // of blocking the message POST for the duration of a summarization call.
+      sealSession(active);
     }
     return db.createSession();
   }
@@ -276,7 +278,7 @@ export function createChat(deps: {
 
     async seal() {
       const active = db.activeSession();
-      if (active) await sealSession(active);
+      if (active) sealSession(active);
       activeSessionId = null;
     },
 

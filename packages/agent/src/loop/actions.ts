@@ -1,5 +1,6 @@
 import type { Bus } from '../bus/index.js';
 import type { Db } from '../db/index.js';
+import { broadcastTasksUpdated } from '../ingest/util.js';
 import type { JudgmentAction } from './judgment.js';
 import { notifyMacos, type MacNotifier } from './notify-macos.js';
 
@@ -9,7 +10,9 @@ import { notifyMacos, type MacNotifier } from './notify-macos.js';
  *                    + macOS notification (failures swallowed)
  * - snooze         ⇒ task → snoozed with snooze_until (task_history via Db.updateTask)
  * - update_priority⇒ task priority write (task_history via Db.updateTask)
- * Finishes with a single WS `tasks.updated` carrying every touched task.
+ * Finishes with a single WS `tasks.updated` full-board broadcast (see
+ * broadcastTasksUpdated) if any action touched a task — `tasks.updated` is always
+ * a full snapshot, never a delta, so clients can safely replace their state.
  */
 
 export interface ActionDeps {
@@ -120,8 +123,7 @@ export function executeActions(
   }
 
   if (touched.size > 0) {
-    const tasks = db.listTasks().filter((t) => touched.has(t.id));
-    bus.broadcast({ type: 'tasks.updated', payload: { tasks } });
+    broadcastTasksUpdated(deps);
   }
   return executed;
 }

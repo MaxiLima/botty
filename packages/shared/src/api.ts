@@ -25,9 +25,13 @@ export const ChatMessageRequestSchema = z.object({
 
 export const TaskActionRequestSchema = z.object({
   action: z.enum(['done', 'snooze', 'dismiss', 'reopen', 'priority']),
-  snoozeDays: z.number().optional(),
+  // User-initiated snooze isn't clamped to the AI judgment's 1-14 day promise
+  // (loop/actions.ts:95) but still needs a sane ceiling — a year covers any
+  // legitimate "come back to this later" use.
+  snoozeDays: z.number().int().min(1).max(365).optional(),
   reason: z.string().optional(),
-  priority: z.number().optional(),
+  // 1=HIGH .. 3=LOW everywhere (DB, API, UI) — see docs/specs/data-model.md.
+  priority: z.number().int().min(1).max(3).optional(),
 });
 
 export const ConfigSaveRequestSchema = z.object({ content: z.string() });
@@ -47,6 +51,10 @@ export const WsEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('chat.done'), payload: z.object({ turnId: z.string(), turn: ChatTurnSchema }) }),
   z.object({ type: z.literal('chat.error'), payload: z.object({ turnId: z.string(), error: z.string() }) }),
+  // Always a FULL board snapshot, never a delta of just the touched task(s) —
+  // every sender must broadcast the full result of db.listTasks(...) after a
+  // write. Consumers are free to treat `tasks` as authoritative (e.g. derive
+  // an open-task count from it) without merging against prior state.
   z.object({ type: z.literal('tasks.updated'), payload: z.object({ tasks: z.array(TaskSchema) }) }),
   z.object({
     type: z.literal('notification'),

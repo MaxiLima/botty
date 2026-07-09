@@ -7,6 +7,7 @@ import {
 import type { Bus } from '../bus/index.js';
 import type { Db } from '../db/index.js';
 import type { HeartbeatConfig } from '../config/parse.js';
+import { broadcastTasksUpdated } from '../ingest/util.js';
 import type { LlmClient } from '../llm/types.js';
 
 /**
@@ -269,11 +270,7 @@ export async function runResolutionSweep(
   }
 
   if (result.closed.length > 0) {
-    const ids = new Set(result.closed.map((c) => c.taskId));
-    bus.broadcast({
-      type: 'tasks.updated',
-      payload: { tasks: db.listTasks().filter((t) => ids.has(t.id)) },
-    });
+    broadcastTasksUpdated(deps);
   }
   return result;
 }

@@ -79,11 +79,27 @@ describe('chat service', () => {
     expect(briefings[0]!.relatedRef).toBe(first.id);
   });
 
-  it('explicit seal() works and the sealed summary feeds the next system prompt', async () => {
+  it('explicit seal() returns without waiting on the LLM summary', async () => {
+    const { db, chat } = await setup();
+    await (await chat.handleUserMessage('remember the quarterly planning doc')).done;
+
+    const before = Date.now();
+    await chat.seal();
+    // seal() must resolve immediately (status flip only) — summarization is deferred
+    // through the turn queue, same mechanism as the idle-seal path, so the explicit
+    // "fresh context" button never blocks on a `structured` LLM call.
+    expect(Date.now() - before).toBeLessThan(20);
+    expect(db.activeSession()).toBeUndefined();
+  });
+
+  it('explicit seal() summary feeds the next system prompt once the deferred job lands', async () => {
     const { db, chat, memory } = await setup();
     await (await chat.handleUserMessage('remember the quarterly planning doc')).done;
     await chat.seal();
-    expect(db.activeSession()).toBeUndefined();
+
+    // The summary job is queued behind the seal; awaiting the next turn's `.done`
+    // guarantees it has landed (turnQueue runs strictly in order).
+    await (await chat.handleUserMessage('anything')).done;
 
     const prompt = memory.buildChatSystemPrompt('anything');
     expect(prompt).toContain('Recent conversation summaries');

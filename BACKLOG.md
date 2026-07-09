@@ -49,6 +49,74 @@ images/quoting, proactive loop, working-hours hard gate, Botty-branded notificat
   pinned eval set; run the replay harness against prompt changes (`--system-file`) before
   shipping them.
 
+## Ports from the 2026-07-09 investigation (Hermes Agent & OpenClaw)
+
+Feature/design ports identified by comparing botty against NousResearch's hermes-agent and
+openclaw/openclaw. Ranked by value × fit. The bugs found in the same investigation were
+fixed directly (see git history around 2026-07-09).
+
+### Features
+
+1. **Chat tools — finish `capture_task` + a minimal action set.** Chat runs with
+   `tools: []` (`llm/sdk.ts`); the spec'd `capture_task` (specs/ingestion.md) was never
+   built, so the assistant can read context but cannot act. Start with four tools:
+   `capture_task`, `task_action` (done/snooze/priority), `memory_search` (FTS already
+   exists), and `session_search` (Hermes pattern: zero-LLM FTS over `chat_turns` with
+   discovery/scroll/browse modes — no embeddings needed). The `chat.toolUse` WS plumbing
+   already exists end-to-end in both UIs. Prerequisite for #3.
+2. **Inferred commitments** (OpenClaw). Hidden post-turn extraction pass detects short-lived
+   follow-ups ("interview tomorrow") → stored as operational state (not tasks, not memory)
+   → delivered via the existing tick when due. Guardrails from the reference design:
+   `maxPerDay` cap (default 3), minimum delay to prevent echo-back right after creation,
+   redelivery context explicitly marked untrusted. Maps to a new candidate reason in
+   `loop/candidates.ts` + one table + one funnel-style extraction prompt.
+3. **Consent-first automation suggestions** (Hermes — their best proactive-UX idea). The
+   agent never auto-creates automations; it registers *suggestions* (hard cap 5 pending;
+   dismiss latches forever by dedup key) the user accepts with one tap. Sources: recurring
+   asks noticed in chat, catalog starters. In botty: a suggestion card in the nudge UI
+   proposing heartbeat.md edits or recurring checklist tasks (#4).
+4. **Structured heartbeat checklist tasks + zero-cost skip** (OpenClaw, plus Hermes's
+   `[SILENT]` sentinel). Optional `tasks:` block in heartbeat.md with per-task `interval` +
+   `prompt`, tracked independently; a tick with no due checklist tasks and no candidates
+   skips the judgment LLM call entirely. Judgment already implements the skip-biased
+   speak/stay-silent contract — this adds the user-programmable side and a zero cost floor.
+5. **Session-summary memory promotion ("dreaming lite")** (OpenClaw dreaming + Hermes
+   curator). Nothing curates memory today (FTS recall over raw records + last-3 seal
+   summaries). Weekly job reviews sealed summaries + resolved tasks, proposes durable facts
+   into a hot-reloaded `memory.md` config file — **staged for user approval** (Hermes's
+   staged-writes valve), never auto-written. Retrieval-frequency scoring can come later.
+6. **Small loop-robustness guards** (Hermes): empty-response recovery (one synthetic nudge
+   retry instead of ending the turn); audit fail-open semantics on judgment/resolution
+   failure paths the way the funnel already degrades classifier failure to extraction.
+
+### Config improvements
+
+- **Promote stranded knobs into heartbeat.md.** `surfaceCooldownHours`, `maxSnoozesPerTick`,
+  `responseWindowHours`, `chatActiveGateMin`, `sessionIdleSealMin`, `meetingPrepLeadMin`,
+  resolution-sweep limits already sit in `HEARTBEAT_DEFAULTS` (shared/src/constants.ts) but
+  the parser never reads them from the file. Same for candidate thresholds (due ≤2d,
+  never-surfaced >4h, stale ≥5d) hardcoded in `loop/candidates.ts`.
+- **Prompts as hot-reloaded config files.** All five system prompts (judgment, resolution,
+  seal-summary, classifier/extractor, briefing) are hardcoded in source. Move to
+  `~/.botty/config/prompts/*.md` behind the existing chokidar watcher; the replay CLI is
+  the ready-made safety net (edit → replay last N decisions → diff).
+- **Cheap-model overrides for housekeeping** (both repos converge on this). `llm.models`
+  routing exists but seal summaries/briefings run on sonnet; default housekeeping tasks to
+  haiku. Pairs with the P2 "Settings UI for model routing" item.
+- **Config fail-fast + last-known-good** (OpenClaw). Parser warnings are currently
+  advisory; on invalid heartbeat.md, keep the last-known-good config active and surface a
+  visible warning card.
+- **Context-budget legibility** (OpenClaw `/context detail`). The memory char budgets
+  (8k/3.2k/1.4k in `memory/index.ts`) truncate silently; expose a per-section byte
+  breakdown (persona/team/recall/tasks) in the Inspector so a clipped persona.md is visible.
+
+### Deliberately not ported (revisit later)
+
+Skills engine (cut from v1 for good reason; revisit only after chat tools exist),
+subagents/multi-agent routing, and the sandboxing stack (becomes relevant the moment chat
+tools land — the untrusted-content boundary-marker pattern was applied to the judgment
+prompt as part of the 2026-07-09 bug fixes).
+
 ## P2 — known seams (from the build, all minor)
 
 - **Settings UI for model routing & pricing**: `llm.models` (task→model) and `llm.pricing`
@@ -79,6 +147,9 @@ images/quoting, proactive loop, working-hours hard gate, Botty-branded notificat
 - Meeting-prep calendar query duplicated in `loop/candidates.ts` and ingest — converge.
 - Near-duplicate task consolidation (cut from v1).
 - WS reconnect has no event replay (client refetches REST state instead — fine, but note it).
+- Product look: a once-surfaced task that becomes due within 24–48h cannot resurface through
+  the 48h tier-1 cooldown (spec-conformant per specs/loop.md gates 1/2, but arguably a due
+  task should pierce the cooldown once).
 
 ## P3 — later / ideas
 
