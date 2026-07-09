@@ -43,6 +43,44 @@ describe('buildChatSystemPrompt', () => {
   });
 });
 
+describe('buildChatSystemPrompt — external MCP tools', () => {
+  it('says nothing about external tools when mcp() is absent or has no servers configured', () => {
+    const { memory } = setup();
+    const prompt = memory.buildChatSystemPrompt('anything');
+    expect(prompt).not.toContain('External tools');
+
+    const db = new Db(':memory:');
+    const withEmptyMcp = createMemory({
+      db,
+      config: {
+        persona: () => '',
+        heartbeat: () => parseHeartbeat('', 'sim'),
+        mcp: () => ({ servers: {} }),
+      },
+    });
+    expect(withEmptyMcp.buildChatSystemPrompt('anything')).not.toContain('External tools');
+  });
+
+  it('mentions external/action-tool consent-gating once a server is configured', () => {
+    const db = new Db(':memory:');
+    const memory = createMemory({
+      db,
+      config: {
+        persona: () => '',
+        heartbeat: () => parseHeartbeat('', 'sim'),
+        mcp: () => ({
+          servers: {
+            slack: { type: 'stdio', command: 'npx', args: [], env: {}, tools: { send_message: 'action' } },
+          },
+        }),
+      },
+    });
+    const prompt = memory.buildChatSystemPrompt('anything');
+    expect(prompt).toContain('External tools');
+    expect(prompt).toContain('queues it for the user\'s approval');
+  });
+});
+
 describe('buildProactiveContext', () => {
   it('collapses whitespace in candidate descriptions so they cannot forge card fields', () => {
     const { db, memory } = setup();

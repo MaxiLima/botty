@@ -11,17 +11,29 @@ import type { ProactiveCandidate } from '../memory/index.js';
 
 export type ReminderReason = 'DUE_SOON' | 'NEVER_SURFACED' | 'STALE' | 'MEETING_PREP';
 
-export function gatherCandidates(db: Db, now: string): ProactiveCandidate[] {
+/** The slice of HeartbeatConfig candidate gathering needs (HeartbeatConfig satisfies it). */
+export interface CandidateThresholds {
+  dueSoonDays: number;
+  neverSurfacedMinAgeHours: number;
+  staleAfterDays: number;
+  meetingPrepLeadMin: number;
+}
+
+export function gatherCandidates(
+  db: Db,
+  now: string,
+  thresholds: CandidateThresholds = HEARTBEAT_DEFAULTS,
+): ProactiveCandidate[] {
   const byId = new Map<string, ProactiveCandidate>();
   const add = (tasks: Task[], reminderReason: ReminderReason) => {
     for (const t of tasks) {
       if (!byId.has(t.id)) byId.set(t.id, { ...t, reminderReason });
     }
   };
-  add(db.dueSoon(now, 2), 'DUE_SOON');
-  add(db.neverSurfaced(now, 4), 'NEVER_SURFACED');
-  add(db.staleTasks(now, 5), 'STALE');
-  add(meetingPrepTasks(db, now), 'MEETING_PREP');
+  add(db.dueSoon(now, thresholds.dueSoonDays), 'DUE_SOON');
+  add(db.neverSurfaced(now, thresholds.neverSurfacedMinAgeHours), 'NEVER_SURFACED');
+  add(db.staleTasks(now, thresholds.staleAfterDays), 'STALE');
+  add(meetingPrepTasks(db, now, thresholds.meetingPrepLeadMin), 'MEETING_PREP');
   return [...byId.values()];
 }
 
@@ -36,8 +48,12 @@ export function gatherCandidates(db: Db, now: string): ProactiveCandidate[] {
  * (ingest is built concurrently — see docs/specs/ingestion.md "gcal" special
  * handling). If ingest ships its own helper, converge on one implementation.
  */
-export function meetingPrepTasks(db: Db, now: string): Task[] {
-  const leadMs = HEARTBEAT_DEFAULTS.meetingPrepLeadMin * 60_000;
+export function meetingPrepTasks(
+  db: Db,
+  now: string,
+  leadMin: number = HEARTBEAT_DEFAULTS.meetingPrepLeadMin,
+): Task[] {
+  const leadMs = leadMin * 60_000;
   const horizon = new Date(Date.parse(now) + leadMs).toISOString();
   const out: Task[] = [];
   for (const event of db.eventsStartingBetween(now, horizon)) {

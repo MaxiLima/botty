@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   AiDecisionSummarySchema,
   ChatTurnSchema,
+  PendingActionSchema,
   SourceCheckSchema,
   TaskSchema,
   TickLogSchema,
@@ -66,10 +67,26 @@ export const WsEventSchema = z.discriminatedUnion('type', [
       score: z.number().nullable(),
     }),
   }),
+  // Consent-gated external MCP tool calls (mcp.json `mode: action`). Queued by
+  // the chat model, resolved by the user. REST: GET /api/actions?status=…,
+  // POST /api/actions/:id/approve, POST /api/actions/:id/dismiss — each returns
+  // { action }. `action.resolved` fires for every terminal transition
+  // (executed / failed / dismissed / expired).
+  z.object({ type: z.literal('action.pending'), payload: z.object({ action: PendingActionSchema }) }),
+  z.object({ type: z.literal('action.resolved'), payload: z.object({ action: PendingActionSchema }) }),
   z.object({ type: z.literal('tick.completed'), payload: z.object({ tick: TickLogSchema }) }),
   z.object({ type: z.literal('source.checked'), payload: z.object({ check: SourceCheckSchema }) }),
   z.object({ type: z.literal('decision.recorded'), payload: z.object({ decision: AiDecisionSummarySchema }) }),
-  z.object({ type: z.literal('config.changed'), payload: z.object({ name: z.string() }) }),
+  z.object({
+    type: z.literal('config.changed'),
+    payload: z.object({
+      name: z.string(),
+      // Parser warnings from the reloaded file, when any. For heartbeat.md a
+      // warning-producing hot reload keeps serving the last-known-good config;
+      // these warnings describe the pending (rejected) content.
+      warnings: z.array(z.string()).optional(),
+    }),
+  }),
 ]);
 export type WsEvent = z.infer<typeof WsEventSchema>;
 export type WsEventType = WsEvent['type'];

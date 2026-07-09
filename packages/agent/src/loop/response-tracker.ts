@@ -74,15 +74,22 @@ export interface ResponseTracker {
   expire(now?: string): number;
 }
 
-export function createResponseTracker(deps: { db: Db; bus: Bus }): ResponseTracker {
+export function createResponseTracker(deps: {
+  db: Db;
+  bus: Bus;
+  /** Optional so tests can omit it; read per call so heartbeat.md hot reloads apply. */
+  config?: { heartbeat(): { responseWindowHours: number } };
+}): ResponseTracker {
   const { db, bus } = deps;
-  const windowMs = HEARTBEAT_DEFAULTS.responseWindowHours * 3_600_000;
+  const windowMs = (): number =>
+    (deps.config?.heartbeat().responseWindowHours ?? HEARTBEAT_DEFAULTS.responseWindowHours) *
+    3_600_000;
   let unsubscribe: (() => void) | null = null;
   let lastAt: string | null = null;
 
   function handleMessage(text: string, at: string): Classification[] {
     lastAt = at;
-    const since = new Date(Date.parse(at) - windowMs).toISOString();
+    const since = new Date(Date.parse(at) - windowMs()).toISOString();
     const candidates: SurfaceWithTask[] = [];
     for (const surface of db.openSurfacesSince(since)) {
       if (!TRACKED_KINDS.has(surface.surfaceKind) || !surface.taskId) continue;
@@ -115,7 +122,7 @@ export function createResponseTracker(deps: { db: Db; bus: Bus }): ResponseTrack
     lastUserMessageAt: () => lastAt,
     handleMessage,
     expire(now = new Date().toISOString()) {
-      return db.expireSurfacesBefore(new Date(Date.parse(now) - windowMs).toISOString());
+      return db.expireSurfacesBefore(new Date(Date.parse(now) - windowMs()).toISOString());
     },
   };
 }

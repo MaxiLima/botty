@@ -8,15 +8,18 @@ import {
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import type { ChatAttachment, ChatTurn } from '@botty/shared';
+import type { ChatAttachment, ChatTurn, PendingAction } from '@botty/shared';
 import { api } from '../lib/api.js';
 import { Markdown } from '../lib/markdown.js';
-import { clock } from '../lib/format.js';
+import { clock, tryParseJson } from '../lib/format.js';
 import { useOnReconnect, useWsEvent } from '../lib/ws.js';
+import { JsonViewer } from '../components/JsonViewer.js';
 import {
+  applyResolvedAction,
   markNotificationsSeen,
   resolveNotification,
   useNotifications,
+  usePendingActions,
   type NotificationItem,
 } from '../lib/stores.js';
 import {
@@ -57,6 +60,7 @@ type ThreadItem =
   | { kind: 'turn'; at: number; turn: ChatTurn }
   | { kind: 'seam'; at: number; id: string }
   | { kind: 'notification'; at: number; n: NotificationItem }
+  | { kind: 'action'; at: number; a: PendingAction }
   | { kind: 'failure'; at: number; f: FailedTurn };
 
 function truncateOneLine(s: string, max: number): string {
@@ -78,6 +82,7 @@ export function ChatPage() {
   const [dragOver, setDragOver] = useState(false);
   const [lightbox, setLightbox] = useState<string | null>(null);
   const notifications = useNotifications();
+  const pendingActions = usePendingActions();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -170,6 +175,9 @@ export function ChatPage() {
     for (const n of notifications) {
       items.push({ kind: 'notification', at: new Date(n.receivedAt).getTime() || Date.now(), n });
     }
+    for (const a of pendingActions) {
+      items.push({ kind: 'action', at: new Date(a.createdAt).getTime() || Date.now(), a });
+    }
     for (const f of failures) {
       items.push({ kind: 'failure', at: f.at, f });
     }
@@ -177,7 +185,7 @@ export function ChatPage() {
       items.push({ kind: 'seam', at, id: `seam-local-${at}` });
     }
     return items.sort((a, b) => a.at - b.at);
-  }, [turns, notifications, failures, localSeams]);
+  }, [turns, notifications, pendingActions, failures, localSeams]);
 
   const turnsById = useMemo(() => new Map(turns.map((t) => [t.id, t])), [turns]);
   const findTurn = useCallback((id: string) => turnsById.get(id), [turnsById]);
@@ -370,6 +378,7 @@ export function ChatPage() {
             if (item.kind === 'failure') return <FailedRow key={`f-${item.f.id}`} f={item.f} />;
             if (item.kind === 'notification')
               return <NudgeRow key={`n-${item.n.id}`} n={item.n} onReply={startReply} />;
+            if (item.kind === 'action') return <ApprovalCard key={`a-${item.a.id}`} a={item.a} />;
             return (
               <TurnRow
                 key={item.turn.id}
@@ -699,6 +708,113 @@ function NudgeRow({ n, onReply }: { n: NotificationItem; onReply: (q: QuoteState
       >
         ↩ reply
       </button>
+    </div>
+  );
+}
+
+/** Short human-readable snippet from a result/error JSON blob, for the resolved outcome line. */
+function jsonSnippet(raw: string | null, max = 200): string {
+  if (!raw) return '';
+  const value = tryParseJson(raw);
+  const text =
+    typeof value === 'string'
+      ? value
+      : value && typeof value === 'object' && 'error' in (value as Record<string, unknown>)
+        ? String((value as Record<string, unknown>).error)
+        : JSON.stringify(value);
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * A pending or resolved consent-gated external tool call — the model
+ * proposed it (e.g. slack · send_message) but nothing ran until the user
+ * approves. Distinct styling from nudges: this is a permission gate, not a
+ * proactive FYI.
+ */
+function ApprovalCard({ a }: { a: PendingAction }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const argsPretty = useMemo(() => {
+    const value = tryParseJson(a.argsJson);
+    try {
+      return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    } catch {
+      return a.argsJson;
+    }
+  }, [a.argsJson]);
+  const argsLong = argsPretty.length > 160 || argsPretty.split('\n').length > 4;
+
+  const approve = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { action } = await api.approveAction(a.id);
+      applyResolvedAction(action);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { action } = await api.dismissAction(a.id);
+      applyResolvedAction(action);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={`turn turn-assistant turn-approval turn-approval-${a.status}`}>
+      <div className="turn-gutter">
+        <span className="turn-who">botty</span>
+        <span className="turn-time" title={a.createdAt}>
+          {clock(a.createdAt)}
+        </span>
+      </div>
+      <div className="turn-body">
+        <div className="approval-head">
+          <span className="approval-badge">⚠ approval needed</span>
+          <span className="approval-target">
+            {a.server} · {a.tool}
+          </span>
+        </div>
+        <p className="approval-summary">{a.summary}</p>
+        {argsLong ? (
+          <JsonViewer data={argsPretty} label="arguments" />
+        ) : (
+          <pre className="approval-args-inline">{argsPretty}</pre>
+        )}
+        {a.status === 'pending' && (
+          <div className="approval-actions">
+            <button className="btn btn-approve" disabled={busy} onClick={() => void approve()}>
+              {busy ? '…' : '✓ approve'}
+            </button>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => void dismiss()}>
+              {busy ? '…' : '✕ dismiss'}
+            </button>
+          </div>
+        )}
+        {a.status === 'executed' && (
+          <div className="approval-outcome approval-outcome-ok">
+            ✓ executed{a.resultJson ? ` — ${jsonSnippet(a.resultJson)}` : ''}
+          </div>
+        )}
+        {a.status === 'failed' && (
+          <div className="approval-outcome approval-outcome-error">
+            ✗ failed{a.resultJson ? ` — ${jsonSnippet(a.resultJson)}` : ''}
+          </div>
+        )}
+        {a.status === 'dismissed' && <div className="approval-outcome approval-outcome-muted">dismissed</div>}
+        {a.status === 'expired' && <div className="approval-outcome approval-outcome-muted">expired</div>}
+        {error && <div className="turn-error">✗ {error}</div>}
+      </div>
     </div>
   );
 }

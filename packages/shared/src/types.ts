@@ -198,6 +198,65 @@ export const CalendarEventSchema = z.object({
 });
 export type CalendarEvent = z.infer<typeof CalendarEventSchema>;
 
+// ---------- inferred commitments ----------
+
+export const CommitmentStatusSchema = z.enum(['open', 'delivered', 'expired', 'dismissed']);
+export type CommitmentStatus = z.infer<typeof CommitmentStatusSchema>;
+
+/**
+ * A short-lived follow-up inferred from chat ("my interview is tomorrow at 3") —
+ * operational state, NOT a task and NOT durable memory. See chat/commitments.ts
+ * (extraction) and loop/commitments.ts (tick delivery).
+ */
+export const CommitmentSchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  dueAt: z.string(),
+  sourceTurnId: z.string().nullable(),
+  createdAt: z.string(),
+  status: CommitmentStatusSchema,
+  deliveredAt: z.string().nullable(),
+});
+export type Commitment = z.infer<typeof CommitmentSchema>;
+
+// ---------- pending actions (consent-gated external MCP tools) ----------
+
+export const PendingActionStatusSchema = z.enum([
+  'pending',
+  'executed',
+  'failed',
+  'dismissed',
+  'expired',
+]);
+export type PendingActionStatus = z.infer<typeof PendingActionStatusSchema>;
+
+/**
+ * An outward-facing external-MCP tool call (mcp.json `mode: action`) proposed
+ * by the chat model but held for explicit user approval — consent-first: the
+ * model can queue, never send. Approve → the agent executes the tool through
+ * its own MCP client and stores the result; dismiss → nothing runs. Pending
+ * entries expire after 24h.
+ */
+export const PendingActionSchema = z.object({
+  id: z.string(),
+  /** MCP server key from mcp.json (e.g. 'slack'). */
+  server: z.string(),
+  /** Tool name on that server (e.g. 'send_message'). */
+  tool: z.string(),
+  /** JSON-encoded arguments exactly as the model proposed them. */
+  argsJson: z.string(),
+  /** One-line human-readable description for the approval card. */
+  summary: z.string(),
+  status: PendingActionStatusSchema,
+  createdAt: z.string(),
+  resolvedAt: z.string().nullable(),
+  /** JSON-encoded tool result (status executed) or error detail (failed). */
+  resultJson: z.string().nullable(),
+  /** Chat turn the model proposed this from, when known. */
+  sourceTurnId: z.string().nullable(),
+});
+export type PendingAction = z.infer<typeof PendingActionSchema>;
+
 // ---------- costs report ----------
 
 export const CostTotalsSchema = z.object({
@@ -313,3 +372,16 @@ export const BriefingOutputSchema = z.object({
   body: z.string(), // markdown
 });
 export type BriefingOutput = z.infer<typeof BriefingOutputSchema>;
+
+/**
+ * Hidden post-turn commitment-extraction pass (chat/commitments.ts). Shares the
+ * 'extraction' LlmTask with the funnel's task/decision extractor — a different
+ * call site, distinguished by schema shape, not by task. Empty array is the
+ * common, correct answer for most chat turns.
+ */
+export const CommitmentExtractionSchema = z.object({
+  commitments: z
+    .array(z.object({ description: z.string(), dueAt: z.string() }))
+    .default([]),
+});
+export type CommitmentExtraction = z.infer<typeof CommitmentExtractionSchema>;

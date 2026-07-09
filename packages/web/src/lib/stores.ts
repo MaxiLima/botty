@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react';
+import type { PendingAction } from '@botty/shared';
 import { api } from './api.js';
+import { addPendingAction, hydratePendingActions, resolvePendingAction } from './pendingActions.js';
 import { onWsEvent, useOnReconnect } from './ws.js';
 
 // ---------- Notifications (chat cards + sidebar badge) ----------
@@ -54,6 +56,51 @@ export function resolveNotification(id: string, resolved: NotificationItem['reso
   emitNotif();
 }
 
+// ---------- Pending actions (consent-gated external tool approvals) ----------
+
+let pendingActions: PendingAction[] = [];
+const pendingActionsSubs = new Set<() => void>();
+
+function emitPendingActions(): void {
+  for (const cb of pendingActionsSubs) cb();
+}
+
+export function usePendingActions(): PendingAction[] {
+  return useSyncExternalStore(
+    (cb) => {
+      pendingActionsSubs.add(cb);
+      return () => pendingActionsSubs.delete(cb);
+    },
+    () => pendingActions,
+  );
+}
+
+export function usePendingActionCount(): number {
+  return useSyncExternalStore(
+    (cb) => {
+      pendingActionsSubs.add(cb);
+      return () => pendingActionsSubs.delete(cb);
+    },
+    () => pendingActions.reduce((acc, a) => acc + (a.status === 'pending' ? 1 : 0), 0),
+  );
+}
+
+/** Apply a resolved/executed/failed action straight from a POST response — idempotent with the WS event. */
+export function applyResolvedAction(action: PendingAction): void {
+  pendingActions = resolvePendingAction(pendingActions, action);
+  emitPendingActions();
+}
+
+async function refetchPendingActions(): Promise<void> {
+  try {
+    const { actions } = await api.actions('pending');
+    pendingActions = hydratePendingActions(pendingActions, actions);
+    emitPendingActions();
+  } catch {
+    // agent unreachable — leave stale list
+  }
+}
+
 // ---------- Open task count (sidebar badge) ----------
 
 let openCount: number | null = null;
@@ -84,10 +131,11 @@ async function refetchOpenCount(): Promise<void> {
   }
 }
 
-/** Hook the badge stores refetch to WS reconnects (call once, from the shell). */
+/** Hook the badge/action stores refetch to WS reconnects (call once, from the shell). */
 export function useStoreRefetchOnReconnect(): void {
   useOnReconnect(() => {
     void refetchOpenCount();
+    void refetchPendingActions();
   });
 }
 
@@ -120,5 +168,16 @@ export function initStores(): void {
     setOpenCount(p.tasks.filter((t) => t.status === 'open').length);
   });
 
+  onWsEvent('action.pending', (p) => {
+    pendingActions = addPendingAction(pendingActions, p.action);
+    emitPendingActions();
+  });
+
+  onWsEvent('action.resolved', (p) => {
+    pendingActions = resolvePendingAction(pendingActions, p.action);
+    emitPendingActions();
+  });
+
   void refetchOpenCount();
+  void refetchPendingActions();
 }

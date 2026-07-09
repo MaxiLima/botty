@@ -19,6 +19,8 @@ export interface AgentEnv {
 }
 
 const CONFIG_FILES = ['persona.md', 'team.md', 'heartbeat.md'] as const;
+/** JSON config, seeded/hot-reloaded separately from the markdown trio (config/mcp.ts). */
+const MCP_CONFIG_FILE = 'mcp.json';
 
 /** Directory containing the shipped config templates (packages/agent/config-templates). */
 export const templatesDir = fileURLToPath(new URL('../config-templates/', import.meta.url));
@@ -61,7 +63,7 @@ export function loadEnv(overrides: Partial<AgentEnv> = {}): AgentEnv {
 
 /** Copy any missing config files from the shipped templates. Never overwrites. */
 export function seedConfigTemplates(configDir: string): void {
-  for (const file of CONFIG_FILES) {
+  for (const file of [...CONFIG_FILES, MCP_CONFIG_FILE]) {
     const dest = path.join(configDir, file);
     if (fs.existsSync(dest)) continue;
     const src = path.join(templatesDir, file);

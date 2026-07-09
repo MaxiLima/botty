@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.js';
 import {
   LlmParseError,
+  type ChatToolSpec,
   type ChatTurnRequest,
   type ChatTurnResult,
   type DecisionRecorder,
@@ -69,6 +70,57 @@ export async function loadSdkQueryFn(): Promise<QueryFn> {
   return (params) => sdk.query(params as Parameters<typeof sdk.query>[0]) as unknown as SdkQueryHandle;
 }
 
+/** MCP server name for chat tools → fully-qualified tool names `mcp__botty__<name>`. */
+export const CHAT_TOOL_SERVER = 'botty';
+
+/** The query() options fragment that exposes chat tools to a turn. */
+export interface ChatToolWiring {
+  mcpServers: Record<string, unknown>;
+  allowedTools: string[];
+}
+
+/**
+ * Builds the in-process MCP server carrying the chat tools for one query() call.
+ * Injectable so tests can stub it; production uses loadSdkToolServerFactory().
+ */
+export type ToolServerFactory = (tools: ChatToolSpec[]) => ChatToolWiring;
+
+/**
+ * Production ToolServerFactory: wraps ChatToolSpecs with the Agent SDK's
+ * tool() + createSdkMcpServer() (in-process SDK MCP transport — no subprocess).
+ * Lazily imported for the same reason as loadSdkQueryFn.
+ */
+export async function loadSdkToolServerFactory(): Promise<ToolServerFactory> {
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  return (specs) => {
+    const tools = specs.map((s) =>
+      sdk.tool(s.name, s.description, s.inputSchema, async (args) => {
+        // execute() never throws by contract, but guard anyway — a handler crash
+        // must surface to the model as an error result, not kill the turn.
+        let result: Record<string, unknown>;
+        try {
+          result = await s.execute(args as Record<string, unknown>);
+        } catch (err) {
+          result = { error: (err as Error).message };
+        }
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+          ...(typeof result.error === 'string' ? { isError: true } : {}),
+        };
+      }),
+    );
+    return {
+      mcpServers: { [CHAT_TOOL_SERVER]: sdk.createSdkMcpServer({ name: CHAT_TOOL_SERVER, tools }) },
+      allowedTools: specs.map((s) => `mcp__${CHAT_TOOL_SERVER}__${s.name}`),
+    };
+  };
+}
+
+/** Resolve a streamed tool_use block name (`mcp__botty__capture_task` or bare) to its spec. */
+export function matchChatTool(tools: ChatToolSpec[] | undefined, blockName: string): ChatToolSpec | undefined {
+  return tools?.find((t) => t.name === blockName || blockName === `mcp__${CHAT_TOOL_SERVER}__${t.name}`);
+}
+
 interface RunResult {
   text: string;
   usage: TokenUsage;
@@ -78,6 +130,10 @@ interface RunResult {
 
 /** Max silence between SDK stream messages before we treat the run as hung. */
 const STREAM_INACTIVITY_MS = 120_000;
+
+/** Appended to the prompt when a completed chat turn streamed no text and no tool call. */
+export const EMPTY_RESPONSE_NUDGE =
+  '\n\n(Your previous reply came back empty. Respond to the message above now — with text, or a tool call if one is appropriate.)';
 
 export class StreamTimeoutError extends Error {
   constructor() {
@@ -172,6 +228,8 @@ export class SdkLlmClient implements LlmClient {
       db: Db;
       modelFor: ModelResolver;
       record: DecisionRecorder;
+      /** Wraps req.tools into an SDK MCP server; absent → chat runs tool-less. */
+      toolServerFactory?: ToolServerFactory;
     },
   ) {}
 
@@ -188,23 +246,44 @@ export class SdkLlmClient implements LlmClient {
         req.onEvent(e);
       },
     };
+    let result: ChatTurnResult;
     try {
-      return await this.chatAttempt(attemptReq, resume);
+      result = await this.chatAttempt(attemptReq, resume);
     } catch (err) {
       // A resumed session can be stale/expired and hang or fail — retry once
       // fresh, but only when the failed attempt streamed nothing (a retry after
       // partial output would re-stream duplicate text into the same turn) and
       // the failure wasn't the user's own interrupt.
       if (resume && !producedOutput && !this.interrupted.has(req.sessionKey)) {
-        return await this.chatAttempt(attemptReq, null);
+        result = await this.chatAttempt(attemptReq, null);
+      } else {
+        throw err;
       }
-      throw err;
     }
+    // Empty-response recovery: the run succeeded but produced neither text nor a
+    // tool call — retry once with a continuation nudge instead of ending the turn
+    // with a blank assistant message. Both attempts land in ai_decisions.
+    if (!producedOutput && result.text.trim() === '' && !this.interrupted.has(req.sessionKey)) {
+      console.warn(
+        `[llm] empty chat response for session ${req.sessionKey} — retrying once with continuation nudge`,
+      );
+      const nowStored = this.deps.db.getProviderSessionId(req.sessionKey);
+      const nudged: ChatTurnRequest = {
+        ...attemptReq,
+        prompt: `${req.prompt}${EMPTY_RESPONSE_NUDGE}`,
+      };
+      return await this.chatAttempt(nudged, nowStored && !nowStored.startsWith('mock-') ? nowStored : null);
+    }
+    return result;
   }
 
   private async chatAttempt(req: ChatTurnRequest, resume: string | null): Promise<ChatTurnResult> {
     const model = this.deps.modelFor('chat');
     const started = Date.now();
+    // Chat tools ride in as an in-process SDK MCP server; `tools: []` still
+    // disables every built-in tool (Bash, Read, …) — only our four are exposed.
+    const toolWiring =
+      req.tools?.length && this.deps.toolServerFactory ? this.deps.toolServerFactory(req.tools) : null;
     const handle = this.deps.queryFn({
       prompt: buildChatPrompt(req),
       options: {
@@ -212,6 +291,7 @@ export class SdkLlmClient implements LlmClient {
         systemPrompt: req.systemPrompt,
         includePartialMessages: true,
         tools: [],
+        ...(toolWiring ? { mcpServers: toolWiring.mcpServers, allowedTools: toolWiring.allowedTools } : {}),
         permissionMode: 'dontAsk',
         maxTurns: 8,
         ...(resume ? { resume } : {}),
@@ -245,7 +325,18 @@ export class SdkLlmClient implements LlmClient {
         } else if (m.type === 'assistant') {
           for (const block of m.message?.content ?? []) {
             if (block.type === 'tool_use' && block.name) {
-              req.onEvent({ type: 'tool_use', name: block.name });
+              // Our chat tools stream as `mcp__botty__<name>` — emit the friendly
+              // name plus a short input-derived summary for the UIs.
+              const spec = matchChatTool(req.tools, block.name);
+              if (spec) {
+                req.onEvent({
+                  type: 'tool_use',
+                  name: spec.name,
+                  summary: spec.summarize((block.input ?? {}) as Record<string, unknown>),
+                });
+              } else {
+                req.onEvent({ type: 'tool_use', name: block.name });
+              }
             }
           }
         } else if (m.type === 'result') {

@@ -3,11 +3,18 @@ import type { AgentEnv } from '../env.js';
 import type { Bus } from '../bus/index.js';
 import type { Db } from '../db/index.js';
 import { MockLlmClient } from './mock.js';
-import { SdkLlmClient, loadSdkQueryFn, type QueryFn } from './sdk.js';
+import {
+  SdkLlmClient,
+  loadSdkQueryFn,
+  loadSdkToolServerFactory,
+  type QueryFn,
+  type ToolServerFactory,
+} from './sdk.js';
 import type { DecisionRecorder, LlmClient, ModelResolver } from './types.js';
 
 export type {
   ChatStreamEvent,
+  ChatToolSpec,
   ChatTurnAttachment,
   ChatTurnRequest,
   ChatTurnResult,
@@ -20,11 +27,17 @@ export { MockLlmClient, MOCK_SIGNAL_REGEXES } from './mock.js';
 export {
   SdkLlmClient,
   buildChatPrompt,
+  matchChatTool,
+  loadSdkToolServerFactory,
+  CHAT_TOOL_SERVER,
+  EMPTY_RESPONSE_NUDGE,
   type QueryFn,
   type SdkQueryHandle,
   type SdkMessageLike,
   type SdkContentBlockLike,
   type SdkUserMessageLike,
+  type ToolServerFactory,
+  type ChatToolWiring,
 } from './sdk.js';
 export { parseStructuredText, JSON_ONLY_INSTRUCTION } from './parse.js';
 
@@ -34,6 +47,8 @@ export interface CreateLlmOptions {
   bus: Bus;
   /** Inject a stub SDK boundary for tests. Ignored when env.mockLlm is true. */
   queryFn?: QueryFn;
+  /** Inject a stub chat-tool server factory for tests. Ignored when env.mockLlm is true. */
+  toolServerFactory?: ToolServerFactory;
 }
 
 /** Task→model routing: DEFAULT_MODELS overridable via settings key `llm.models`. */
@@ -63,5 +78,8 @@ export async function createLlm(opts: CreateLlmOptions): Promise<LlmClient> {
     return new MockLlmClient({ db: opts.db, modelFor, record });
   }
   const queryFn = opts.queryFn ?? (await loadSdkQueryFn());
-  return new SdkLlmClient({ queryFn, db: opts.db, modelFor, record });
+  // A stubbed queryFn (tests) must not drag the real SDK in via the tool factory.
+  const toolServerFactory =
+    opts.toolServerFactory ?? (opts.queryFn ? undefined : await loadSdkToolServerFactory());
+  return new SdkLlmClient({ queryFn, db: opts.db, modelFor, record, toolServerFactory });
 }

@@ -5,7 +5,18 @@ import { createResponseTracker } from './response-tracker.js';
 import { runTick, type TickTrigger } from './tick.js';
 import { isWithinWorkingHours, msUntilNextTime } from './time.js';
 
-export { gatherCandidates, meetingPrepTasks } from './candidates.js';
+export { gatherCandidates, meetingPrepTasks, type CandidateThresholds } from './candidates.js';
+export {
+  buildChecklistContext,
+  checklistCandidateId,
+  dueChecklistTasks,
+  executeChecklistNotifies,
+  loadChecklistState,
+  markChecklistRun,
+  CHECKLIST_ID_PREFIX,
+  CHECKLIST_STATE_KEY,
+  type ChecklistState,
+} from './checklist.js';
 export { applyRulesFilter, type GateName, type RulesFilterResult } from './rules-filter.js';
 export { buildJudgmentPrompt, runJudgment, validateJudgment, JUDGMENT_SYSTEM } from './judgment.js';
 export { executeActions, type ExecutedAction } from './actions.js';
@@ -36,7 +47,7 @@ export interface Loop {
 
 export function createLoop(ctx: AgentContext): Loop {
   const { db, bus, config, llm, memory } = ctx;
-  const tracker = createResponseTracker({ db, bus });
+  const tracker = createResponseTracker({ db, bus, config });
   const tickDeps = { db, bus, config, llm, memory, tracker };
 
   let started = false;

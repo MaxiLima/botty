@@ -8,6 +8,9 @@ import { createChat } from './chat/index.js';
 import { createIngest } from './ingest/index.js';
 import { createLoop } from './loop/index.js';
 import { createServer } from './server/index.js';
+import { createMcpConnections } from './mcp/connections.js';
+import { createPendingActionQueue } from './mcp/pending.js';
+import { createMcpToolsFactory } from './mcp/tools.js';
 import type { AgentContext } from './context.js';
 
 async function main(): Promise<void> {
@@ -23,14 +26,22 @@ async function main(): Promise<void> {
   config.startWatching();
   // 5. llm
   const llm = await createLlm({ env, db, bus });
-  // 6. memory
+  // 6. external MCP servers (mcp.json): connection manager, approval queue,
+  // per-turn chat-tool factory. Reconnect stale/removed servers on hot reload.
+  const mcpConnections = createMcpConnections({ getConfig: () => config.mcp() });
+  const pendingActions = createPendingActionQueue({ db, bus, connections: mcpConnections });
+  const mcpTools = createMcpToolsFactory({ config, connections: mcpConnections, pending: pendingActions });
+  bus.onBroadcast((e) => {
+    if (e.type === 'config.changed' && e.payload.name === 'mcp') mcpConnections.onConfigChanged(config.mcp());
+  });
+  // 7. memory
   const memory = createMemory({ db, config });
-  // 7. chat
-  const chat = createChat({ db, bus, llm, memory });
+  // 8. chat
+  const chat = createChat({ db, bus, llm, memory, config, mcpTools });
 
-  const ctx: AgentContext = { env, db, bus, config, llm, memory, chat };
+  const ctx: AgentContext = { env, db, bus, config, llm, memory, chat, mcpConnections, pendingActions };
 
-  // 8-10. ingest → loop → server
+  // 9-11. ingest → loop → server
   const ingest = createIngest(ctx);
   const loop = createLoop(ctx);
   const server = createServer(ctx, { ingest, loop });
@@ -53,6 +64,7 @@ async function main(): Promise<void> {
       ingest.stop();
       await server.stop();
       await config.stop();
+      await mcpConnections.closeAll();
       db.close();
     } catch (err) {
       console.error('[botty] shutdown error:', err);

@@ -1,11 +1,14 @@
 import type { Task } from '@botty/shared';
 import type { Db, FtsHit } from '../db/index.js';
 import type { HeartbeatConfig } from '../config/parse.js';
+import type { McpConfig } from '../config/mcp.js';
 
 /** The slice of ConfigManager the ContextBuilder needs (kept narrow for tests). */
 export interface MemoryConfigSource {
   persona(): string;
   heartbeat(): HeartbeatConfig;
+  /** Absent (test stubs) → the Tools block never mentions external tools. */
+  mcp?(): McpConfig;
 }
 
 /** A loop candidate: a task plus why it's being considered this tick. */
@@ -59,7 +62,8 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
     const bits = [`[P${t.priority}] ${flat(t.description)}`];
     if (t.requesterName) bits.push(`from ${flat(t.requesterName)}`);
     if (t.dueDate) bits.push(`due ${t.dueDate.slice(0, 10)}`);
-    return `- ${clip(bits.join(' · '), 160)}`;
+    // Id appended outside the clip — task_action needs it verbatim.
+    return `- ${clip(bits.join(' · '), 160)} (id: ${t.id})`;
   }
 
   return {
@@ -134,6 +138,26 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
       if (open.length > 0) {
         sections.push(clip(`## Open tasks\n${open.map(taskOneLiner).join('\n')}`, SECTION_CAP));
       }
+
+      const toolLines = [
+        '## Tools',
+        'capture_task: the user asks you to track/remember/remind about a piece of work.',
+        'task_action: mark an existing task done / snooze / dismiss / reopen / change priority — needs its id.',
+        'memory_search: recall past tasks, decisions, or interactions (also finds task ids).',
+        'session_search: find or browse past chat conversations.',
+      ];
+      const mcpConfig = config.mcp?.();
+      if (mcpConfig && Object.keys(mcpConfig.servers).length > 0) {
+        toolLines.push(
+          'External tools from configured MCP servers are also available. "Action"-mode external tools ' +
+            'never execute immediately — calling one only queues it for the user\'s approval, so say so ' +
+            'and never claim an action was performed when it was only queued.',
+        );
+      }
+      toolLines.push(
+        "Bias toward answering directly — call a tool only when the user's intent clearly needs it. Never invent task ids.",
+      );
+      sections.push(toolLines.join('\n'));
 
       return clip(sections.join('\n\n'), TOTAL_BUDGET);
     },

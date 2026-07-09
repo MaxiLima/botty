@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SOURCES, type JudgmentOutput } from '@botty/shared';
+import type { JudgmentOutput } from '@botty/shared';
 import { createBus, type Bus } from '../../src/bus/index.js';
-import type { HeartbeatConfig } from '../../src/config/parse.js';
+import { parseHeartbeat, type HeartbeatConfig } from '../../src/config/parse.js';
 import { Db } from '../../src/db/index.js';
 import type { LlmClient, StructuredRequest } from '../../src/llm/types.js';
 import { createMemory } from '../../src/memory/index.js';
@@ -17,20 +17,11 @@ import { runTick, type TickDeps } from '../../src/loop/tick.js';
 
 function heartbeat(over: Partial<HeartbeatConfig> = {}): HeartbeatConfig {
   return {
-    tickIntervalMin: 20,
+    ...parseHeartbeat('', 'sim'), // defaults for every knob
     workingHours: { start: '00:00', end: '00:00' },
     quietHours: { start: '00:00', end: '00:00' },
     activeDays: [0, 1, 2, 3, 4, 5, 6],
-    morningBriefAt: '08:45',
-    eveningBriefAt: '18:00',
-    surfacingThreshold: 7,
-    maxSurfacesPerTask: 3,
     maxProactivePerHour: 5,
-    minGapBetweenNudgesMin: 30,
-    sources: Object.fromEntries(SOURCES.map((s) => [s, { enabled: true, intervalMin: 1 }])) as HeartbeatConfig['sources'],
-    instructions: '',
-    thisWeek: '',
-    warnings: [],
     ...over,
   };
 }

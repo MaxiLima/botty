@@ -11,8 +11,12 @@ import {
 } from '@botty/shared';
 import type { Bus } from '../bus/index.js';
 import { nowIso, type Db } from '../db/index.js';
-import type { ChatTurnAttachment, LlmClient } from '../llm/types.js';
+import { TOOL_TRIGGER_RE } from '../llm/mock.js';
+import type { ChatToolSpec, ChatTurnAttachment, LlmClient } from '../llm/types.js';
 import type { Memory } from '../memory/index.js';
+import type { McpChatToolsProvider } from '../mcp/tools.js';
+import { extractCommitments } from './commitments.js';
+import { createChatTools } from './tools.js';
 
 export interface ChatMessageOptions {
   /** Inline images (validated by ChatMessageRequestSchema at the route). */
@@ -89,10 +93,26 @@ export function createChat(deps: {
   memory: Memory;
   /** Where attachment binaries are written; defaults to <dataDir>/attachments (derived from db path). */
   attachmentsDir?: string;
+  /**
+   * Heartbeat knobs (session_idle_seal_min, infer_commitments); absent →
+   * HEARTBEAT_DEFAULTS. Read per-call so hot reload applies.
+   */
+  config?: { heartbeat(): { sessionIdleSealMin: number; inferCommitments: boolean } };
+  /**
+   * External MCP tools (mcp.json), re-derived per turn so a hot mcp.json
+   * reload takes effect without a restart. Absent → chat runs with only the
+   * four built-ins (tests, or an mcp-less setup).
+   */
+  mcpTools?: McpChatToolsProvider;
 }): Chat {
   const { db, bus, llm, memory } = deps;
   const attachmentsDir = deps.attachmentsDir ?? defaultAttachmentsDir(db.path);
-  const idleSealMs = HEARTBEAT_DEFAULTS.sessionIdleSealMin * 60_000;
+  // Model-callable chat tools (capture_task, task_action, memory_search, session_search).
+  const chatTools = createChatTools({ db, memory, bus });
+  const idleSealMs = (): number =>
+    (deps.config?.heartbeat().sessionIdleSealMin ?? HEARTBEAT_DEFAULTS.sessionIdleSealMin) * 60_000;
+  const inferCommitmentsEnabled = (): boolean =>
+    deps.config?.heartbeat().inferCommitments ?? HEARTBEAT_DEFAULTS.inferCommitments;
   let activeSessionId: string | null = null;
 
   /** Write each attachment to <attachmentsDir>/<nanoid>.<ext>; return the meta entries. */
@@ -135,7 +155,7 @@ export function createChat(deps: {
         .join('\n')
         .slice(0, 12_000);
       const out = await llm.structured({
-        task: 'briefing',
+        task: 'seal',
         system: SEAL_SUMMARY_SYSTEM,
         prompt: `Summarize this session:\n\n${transcript}`,
         schema: BriefingOutputSchema,
@@ -164,7 +184,7 @@ export function createChat(deps: {
     const active = db.activeSession();
     if (active) {
       const idleMs = Date.parse(now) - Date.parse(active.lastActiveAt);
-      if (idleMs <= idleSealMs) return active;
+      if (idleMs <= idleSealMs()) return active;
       // Everything from the activeSession() read to createSession() below is
       // synchronous, so a concurrent send can't double-seal or create a second
       // active session. sealSession() defers the LLM summary via the turn queue —
@@ -185,11 +205,15 @@ export function createChat(deps: {
       // message is always its own top hit and burns a recall slot every turn.
       const systemPrompt = memory.buildChatSystemPrompt(input.text);
       db.ftsIndex('chat', input.userTurnId, input.text);
+      // External MCP tools are re-derived every turn (not cached at startup like
+      // chatTools) so a hot mcp.json reload takes effect immediately.
+      const externalTools: ChatToolSpec[] = deps.mcpTools ? await deps.mcpTools(input.userTurnId) : [];
       const result = await llm.chatTurn({
         sessionKey: sessionId,
         prompt: input.prompt,
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
         systemPrompt,
+        tools: [...chatTools, ...externalTools],
         onEvent: (e) => {
           if (e.type === 'text') {
             bus.broadcast({ type: 'chat.chunk', payload: { turnId, delta: e.text } });
@@ -255,6 +279,18 @@ export function createChat(deps: {
       const done = queueTurn(() =>
         runAssistant(session.id, turnId, { text, prompt, userTurnId: userTurn.id, attachments }),
       );
+      // Inferred commitments (feature #2): hidden post-turn extraction over the
+      // user's own message. Queued right behind the assistant turn (same turn
+      // queue sealSession's summarizeSession uses) so it runs deferred and never
+      // blocks the response stream — its own promise is deliberately not
+      // returned to the caller. Cost control: at most one extraction call per
+      // user turn, skipped on empty turns and on the mock chat's `!tool`
+      // trigger (see llm/mock.ts).
+      if (inferCommitmentsEnabled() && text.trim() && !TOOL_TRIGGER_RE.test(text.trim())) {
+        queueTurn(() => extractCommitments({ db, llm }, { text, sourceTurnId: userTurn.id, now })).catch(
+          () => {},
+        );
+      }
       return { turnId, done };
     },
 

@@ -101,6 +101,11 @@
   color: #fff;
   animation: badge-pop 0.25s cubic-bezier(0.2, 1.6, 0.4, 1);
 }
+.nav-badge-warn {
+  background: var(--amber);
+  color: #1a1400;
+  animation: badge-pop 0.25s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
 @keyframes badge-pop {
   from {
     transform: scale(0.5);

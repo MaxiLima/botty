@@ -1,9 +1,4 @@
-import {
-  HEARTBEAT_DEFAULTS,
-  ResolutionOutputSchema,
-  type RawLogRow,
-  type Task,
-} from '@botty/shared';
+import { ResolutionOutputSchema, type RawLogRow, type Task } from '@botty/shared';
 import type { Bus } from '../bus/index.js';
 import type { Db } from '../db/index.js';
 import type { HeartbeatConfig } from '../config/parse.js';
@@ -181,7 +176,12 @@ export async function runResolutionSweep(
   const hb = deps.config.heartbeat();
   const now = opts.now ?? new Date().toISOString();
   const nowMs = Date.parse(now);
-  const d = HEARTBEAT_DEFAULTS;
+  // Sweep limits come from heartbeat.md (hot-reloaded), not the shared constants.
+  const d = {
+    resolutionCheckCooldownMin: hb.resolutionCheckCooldownMin,
+    maxResolutionChecksPerSweep: hb.maxResolutionChecksPerSweep,
+    resolutionConfidenceMin: hb.resolutionConfidenceMin,
+  };
 
   const result: SweepResult = { checked: 0, closed: [], skipped: [] };
   if (!hb.autoResolveTasks) return result;

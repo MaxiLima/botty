@@ -15,6 +15,9 @@ import { createLlm } from '../../src/llm/index.js';
 import { createMemory } from '../../src/memory/index.js';
 import { createChat } from '../../src/chat/index.js';
 import { createServer } from '../../src/server/index.js';
+import { createMcpConnections } from '../../src/mcp/connections.js';
+import { createPendingActionQueue } from '../../src/mcp/pending.js';
+import { createMcpToolsFactory } from '../../src/mcp/tools.js';
 
 /**
  * Regression tests for two LOW-severity bugs, both localized to
@@ -66,9 +69,19 @@ async function setup(llmOverride?: (base: LlmClient) => LlmClient): Promise<Harn
   config.materializePeople();
   const baseLlm = await createLlm({ env, db, bus });
   const llm = llmOverride ? llmOverride(baseLlm) : baseLlm;
+  const mcpConnections = createMcpConnections({ getConfig: () => config.mcp() });
+  const pendingActions = createPendingActionQueue({ db, bus, connections: mcpConnections });
+  const mcpTools = createMcpToolsFactory({ config, connections: mcpConnections, pending: pendingActions });
   const memory = createMemory({ db, config });
-  const chat = createChat({ db, bus, llm, memory, attachmentsDir: path.join(dataDir, 'attachments') });
-  const ctx: AgentContext = { env, db, bus, config, llm, memory, chat };
+  const chat = createChat({
+    db,
+    bus,
+    llm,
+    memory,
+    attachmentsDir: path.join(dataDir, 'attachments'),
+    mcpTools,
+  });
+  const ctx: AgentContext = { env, db, bus, config, llm, memory, chat, mcpConnections, pendingActions };
 
   const ingest: Ingest = {
     start() {},

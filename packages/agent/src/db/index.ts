@@ -7,8 +7,11 @@ import type {
   AiDecision,
   CalendarEvent,
   ChatTurn,
+  Commitment,
   Decision,
   Interaction,
+  PendingAction,
+  PendingActionStatus,
   Person,
   ProactiveLogRow,
   Project,
@@ -97,6 +100,22 @@ export interface CostRollupRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+}
+
+export interface NewCommitment {
+  description: string;
+  /** ISO datetime the commitment is due. */
+  dueAt: string;
+  sourceTurnId?: string | null;
+}
+
+export interface NewPendingAction {
+  server: string;
+  tool: string;
+  /** JSON-encoded arguments exactly as the model proposed them. */
+  argsJson: string;
+  summary: string;
+  sourceTurnId?: string | null;
 }
 
 export interface FtsHit {
@@ -680,6 +699,75 @@ export class Db {
     );
   }
 
+  // ---------- commitments (inferred, feature #2) ----------
+
+  insertCommitment(input: NewCommitment): Commitment {
+    const id = nanoid();
+    const now = nowIso();
+    this.raw
+      .prepare(
+        `INSERT INTO commitments (id, description, due_at, source_turn_id, created_at, status)
+         VALUES (?, ?, ?, ?, ?, 'open')`,
+      )
+      .run(id, input.description, input.dueAt, input.sourceTurnId ?? null, now);
+    return this.getCommitment(id)!;
+  }
+
+  getCommitment(id: string): Commitment | undefined {
+    const row = this.raw.prepare('SELECT * FROM commitments WHERE id=?').get(id);
+    return row ? mapRow<Commitment>(row) : undefined;
+  }
+
+  /** Open commitments due at or before `now`, earliest first (tick delivery). */
+  dueCommitments(now = nowIso()): Commitment[] {
+    return mapRows<Commitment>(
+      this.raw
+        .prepare(`SELECT * FROM commitments WHERE status='open' AND due_at <= ? ORDER BY due_at`)
+        .all(now),
+    );
+  }
+
+  /** All open commitments (dedup lookups on the extraction pass). */
+  openCommitments(): Commitment[] {
+    return mapRows<Commitment>(
+      this.raw.prepare(`SELECT * FROM commitments WHERE status='open' ORDER BY due_at`).all(),
+    );
+  }
+
+  markCommitmentDelivered(id: string, at = nowIso()): void {
+    this.raw
+      .prepare(`UPDATE commitments SET status='delivered', delivered_at=? WHERE id=?`)
+      .run(at, id);
+  }
+
+  /**
+   * Expire open commitments whose due date is more than `graceHours` in the past
+   * and were never delivered. Called at the start of tick delivery gathering.
+   * Returns the number of rows expired.
+   */
+  expireStaleCommitments(now = nowIso(), graceHours: number): number {
+    const cutoff = new Date(Date.parse(now) - graceHours * 3_600_000).toISOString();
+    const res = this.raw
+      .prepare(`UPDATE commitments SET status='expired' WHERE status='open' AND due_at < ?`)
+      .run(cutoff);
+    return res.changes;
+  }
+
+  /** Deliveries (status='delivered') since `sinceIso` — the maxPerDay cap. */
+  countCommitmentDeliveriesSince(sinceIso: string): number {
+    const row = this.raw
+      .prepare(`SELECT COUNT(*) AS n FROM commitments WHERE status='delivered' AND delivered_at >= ?`)
+      .get(sinceIso) as { n: number };
+    return row.n;
+  }
+
+  /** Newest-first page of commitments (Inspector-ish reads). */
+  listCommitments(limit = 50): Commitment[] {
+    return mapRows<Commitment>(
+      this.raw.prepare('SELECT * FROM commitments ORDER BY created_at DESC LIMIT ?').all(limit),
+    );
+  }
+
   // ---------- chat turns & sessions ----------
 
   insertChatTurn(input: {
@@ -707,6 +795,21 @@ export class Db {
     const rows = this.raw
       .prepare('SELECT id FROM chat_turns WHERE session_id=? ORDER BY created_at, id')
       .all(sessionId) as { id: string }[];
+    return rows.map((r) => this.getChatTurn(r.id)!);
+  }
+
+  countTurnsForSession(sessionId: string): number {
+    const row = this.raw
+      .prepare('SELECT COUNT(*) AS n FROM chat_turns WHERE session_id=?')
+      .get(sessionId) as { n: number };
+    return row.n;
+  }
+
+  /** Oldest-first page of one session's turns (session_search browse-mode scrolling). */
+  turnsForSessionPage(sessionId: string, offset = 0, limit = 20): ChatTurn[] {
+    const rows = this.raw
+      .prepare('SELECT id FROM chat_turns WHERE session_id=? ORDER BY created_at, id LIMIT ? OFFSET ?')
+      .all(sessionId, limit, offset) as { id: string }[];
     return rows.map((r) => this.getChatTurn(r.id)!);
   }
 
@@ -1033,6 +1136,65 @@ export class Db {
     return out;
   }
 
+  // ---------- pending_actions (consent-gated external MCP tools) ----------
+
+  insertPendingAction(input: NewPendingAction): PendingAction {
+    const id = nanoid();
+    const now = nowIso();
+    this.raw
+      .prepare(
+        `INSERT INTO pending_actions (id, server, tool, args_json, summary, status, created_at, resolved_at, result_json, source_turn_id)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?)`,
+      )
+      .run(id, input.server, input.tool, input.argsJson, input.summary, now, input.sourceTurnId ?? null);
+    return this.getPendingAction(id)!;
+  }
+
+  getPendingAction(id: string): PendingAction | undefined {
+    const row = this.raw.prepare('SELECT * FROM pending_actions WHERE id=?').get(id);
+    return row ? mapRow<PendingAction>(row) : undefined;
+  }
+
+  listPendingActions(status?: PendingActionStatus): PendingAction[] {
+    const sql = `SELECT * FROM pending_actions ${status ? 'WHERE status=?' : ''} ORDER BY created_at DESC`;
+    return mapRows<PendingAction>(status ? this.raw.prepare(sql).all(status) : this.raw.prepare(sql).all());
+  }
+
+  /** Dedup lookup: an identical (server, tool, argsJson) call already awaiting approval. */
+  findPendingActionByArgs(server: string, tool: string, argsJson: string): PendingAction | undefined {
+    const row = this.raw
+      .prepare(`SELECT * FROM pending_actions WHERE server=? AND tool=? AND args_json=? AND status='pending'`)
+      .get(server, tool, argsJson);
+    return row ? mapRow<PendingAction>(row) : undefined;
+  }
+
+  countPendingActionsByStatus(status: PendingActionStatus): number {
+    const row = this.raw.prepare('SELECT COUNT(*) AS n FROM pending_actions WHERE status=?').get(status) as {
+      n: number;
+    };
+    return row.n;
+  }
+
+  /** Pending rows older than `cutoffIso` — the queue layer's lazy-expiry read. */
+  stalePendingActions(cutoffIso: string): PendingAction[] {
+    return mapRows<PendingAction>(
+      this.raw
+        .prepare(`SELECT * FROM pending_actions WHERE status='pending' AND created_at < ? ORDER BY created_at`)
+        .all(cutoffIso),
+    );
+  }
+
+  /** Flip a pending action to a terminal status (executed / failed / dismissed / expired). */
+  resolvePendingAction(
+    id: string,
+    patch: { status: PendingActionStatus; resolvedAt: string; resultJson: string | null },
+  ): PendingAction {
+    this.raw
+      .prepare('UPDATE pending_actions SET status=?, resolved_at=?, result_json=? WHERE id=?')
+      .run(patch.status, patch.resolvedAt, patch.resultJson, id);
+    return this.getPendingAction(id)!;
+  }
+
   // ---------- FTS ----------
 
   /** Index (or re-index) a memory row. Idempotent per (kind, refId). */
@@ -1053,6 +1215,26 @@ export class Db {
         'SELECT kind, ref_id, content, bm25(memory_fts) AS score FROM memory_fts WHERE memory_fts MATCH ? ORDER BY score LIMIT ?',
       )
       .all(match, limit * 3) as { kind: string; ref_id: string; content: string; score: number }[];
+    return this.rankFtsRows(rows, limit);
+  }
+
+  /** ftsSearch restricted to one kind (e.g. 'chat' for session_search over past turns). */
+  ftsSearchKind(kind: 'task' | 'decision' | 'interaction' | 'chat', query: string, limit = 5): FtsHit[] {
+    const match = sanitizeFtsQuery(query);
+    if (!match) return [];
+    const rows = this.raw
+      .prepare(
+        'SELECT kind, ref_id, content, bm25(memory_fts) AS score FROM memory_fts WHERE memory_fts MATCH ? AND kind=? ORDER BY score LIMIT ?',
+      )
+      .all(match, kind, limit * 3) as { kind: string; ref_id: string; content: string; score: number }[];
+    return this.rankFtsRows(rows, limit);
+  }
+
+  /** Shared FTS post-processing: resolve timestamps, sort bm25-then-recency, cap. */
+  private rankFtsRows(
+    rows: { kind: string; ref_id: string; content: string; score: number }[],
+    limit: number,
+  ): FtsHit[] {
     const hits: FtsHit[] = rows.map((r) => ({
       kind: r.kind,
       refId: r.ref_id,

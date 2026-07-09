@@ -113,10 +113,9 @@ describe('chat service: quoted replies', () => {
     });
     const assistant = await done;
 
-    const reply = db
-      .chatHistory()
-      .filter((t) => t.role === 'user')
-      .at(-1)!;
+    // Same-millisecond turns tiebreak on random ids in chatHistory — select the
+    // reply by content, not position.
+    const reply = db.chatHistory().find((t) => t.role === 'user' && t.content === 'replying to that')!;
     const meta = reply.meta as { quotedTurnId: string; quotedPreview: string };
     expect(meta.quotedTurnId).toBe(quotedTurn.id);
     expect(meta.quotedPreview).toBe(longText.slice(0, 160));

@@ -9,6 +9,8 @@ import {
   type ConfigFileName,
   type CostsReport,
   type Interaction,
+  type PendingAction,
+  type PendingActionStatus,
   type Person,
   type ProactiveLogRow,
   type Project,
@@ -112,6 +114,11 @@ export function createApi(baseUrl: string) {
     config: () => req<{ files: { persona: string; team: string; heartbeat: string } }>('GET', '/api/config'),
     saveConfig: (name: ConfigFileName, content: string) =>
       req<{ ok: boolean; warnings: string[] }>('PUT', `/api/config/${name}`, { content }),
+
+    // Pending actions (consent-gated external tool calls) — read-only here,
+    // the TUI is display-only for these; approving happens in the web app.
+    actions: (status?: PendingActionStatus) =>
+      req<{ actions: PendingAction[] }>('GET', `/api/actions${qs({ status })}`),
 
     // Control
     runLoopNow: () => req<{ tickId: string }>('POST', '/api/loop/run-now', {}),

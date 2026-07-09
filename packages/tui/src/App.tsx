@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
-import type { ChatTurn } from '@botty/shared';
+import type { ChatTurn, PendingActionStatus } from '@botty/shared';
 import { createApi } from './api.js';
 import { filterCommands, parseSlash, resolveCommand, type Command, type PanelData } from './commands.js';
 import type { TuiConfig } from './config.js';
@@ -10,7 +10,16 @@ import { clock } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { face } from './mascot.js';
 import { Panel } from './panels.js';
-import { applyChunk, applyThinking, applyToolUse, newPending, takeUnseen, type PendingTurn } from './transcript.js';
+import {
+  applyChunk,
+  applyThinking,
+  applyToolUse,
+  formatApprovalPendingLine,
+  formatApprovalResolvedLine,
+  newPending,
+  takeUnseen,
+  type PendingTurn,
+} from './transcript.js';
 import { startWs, useOnReconnect, useWsEvent, useWsStatus } from './ws.js';
 
 type ItemBody =
@@ -22,6 +31,9 @@ type ItemBody =
   | { kind: 'nudge'; message: string; nkind: string; score: number | null }
   /** A reply that errored mid-stream — keep the partial text the user saw. */
   | { kind: 'partial'; text: string; error: string }
+  /** A consent-gated external tool call the model proposed — approve/dismiss only in the web app. */
+  | { kind: 'approvalPending'; text: string }
+  | { kind: 'approvalResolved'; text: string; status: PendingActionStatus }
   | { kind: 'panel'; panel: PanelData };
 
 type Item = ItemBody & { key: string };
@@ -33,6 +45,13 @@ const MENU_ROWS = 6;
 const TAIL_LIMIT = 20;
 /** Long streams: live region shows only the tail (the full reply lands in the transcript). */
 const MAX_STREAM_LINES = 12;
+const APPROVAL_RESOLVED_COLOR: Record<PendingActionStatus, string> = {
+  pending: 'yellow',
+  executed: 'green',
+  failed: 'red',
+  dismissed: 'gray',
+  expired: 'gray',
+};
 
 export function App({ config }: { config: TuiConfig }) {
   const { exit } = useApp();
@@ -41,6 +60,8 @@ export function App({ config }: { config: TuiConfig }) {
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const [taskCount, setTaskCount] = useState<number | null>(null);
+  /** ids of currently-pending approvals, for the statusline count — set (not a bare number) so resolves reconcile cleanly regardless of arrival order. */
+  const [approvalIds, setApprovalIds] = useState<Set<string>>(new Set());
   const [busyCmd, setBusyCmd] = useState<string | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -101,6 +122,15 @@ export function App({ config }: { config: TuiConfig }) {
 
   const bootOkRef = useRef(false);
 
+  const refreshApprovals = useCallback(async () => {
+    try {
+      const { actions } = await api.actions('pending');
+      setApprovalIds(new Set(actions.map((a) => a.id)));
+    } catch {
+      // agent unreachable — leave the count stale
+    }
+  }, [api]);
+
   // Banner (agent info + open-task count) plus history — one parallel round trip.
   const loadInitial = useCallback(async () => {
     try {
@@ -112,10 +142,11 @@ export function App({ config }: { config: TuiConfig }) {
       });
       appendTurns(hist.turns);
       bootOkRef.current = true;
+      void refreshApprovals();
     } catch {
       pushItem({ kind: 'error', text: `can't reach the agent at ${config.baseUrl} — is it running?` });
     }
-  }, [api, appendTurns, config.baseUrl, config.historyLimit, pushItem]);
+  }, [api, appendTurns, config.baseUrl, config.historyLimit, pushItem, refreshApprovals]);
 
   useEffect(() => {
     startWs(config.wsUrl);
@@ -133,6 +164,7 @@ export function App({ config }: { config: TuiConfig }) {
     setPending(null);
     pushItem({ kind: 'info', text: 'reconnected — refreshed history' });
     void refreshHistory();
+    void refreshApprovals();
   });
 
   /** A stream for a turn we didn't start → another client sent a message; pull it in. */
@@ -188,6 +220,25 @@ export function App({ config }: { config: TuiConfig }) {
   useWsEvent('tasks.updated', (p) => setTaskCount(p.tasks.filter((t) => t.status === 'open').length));
   useWsEvent('notification', (p) => {
     pushItem({ kind: 'nudge', message: p.message, nkind: p.kind, score: p.score });
+  });
+  // Consent-gated external tool calls: TUI is display-only — approving/dismissing
+  // stays in the web app (see the ⧗ notice line's copy).
+  useWsEvent('action.pending', (p) => {
+    pushItem({ kind: 'approvalPending', text: formatApprovalPendingLine(p.action.summary) });
+    setApprovalIds((prev) => (prev.has(p.action.id) ? prev : new Set(prev).add(p.action.id)));
+  });
+  useWsEvent('action.resolved', (p) => {
+    pushItem({
+      kind: 'approvalResolved',
+      text: formatApprovalResolvedLine(p.action.status, p.action.summary),
+      status: p.action.status,
+    });
+    setApprovalIds((prev) => {
+      if (!prev.has(p.action.id)) return prev;
+      const next = new Set(prev);
+      next.delete(p.action.id);
+      return next;
+    });
   });
 
   // Streaming stopwatch for the statusline — keyed per turn so an adopted
@@ -301,6 +352,7 @@ export function App({ config }: { config: TuiConfig }) {
     config.baseUrl.replace(/^https?:\/\//, ''),
     `ws ${wsStatus}`,
     taskCount !== null ? `${taskCount} task${taskCount === 1 ? '' : 's'}` : null,
+    approvalIds.size > 0 ? `⧗ ${approvalIds.size} approval${approvalIds.size === 1 ? '' : 's'}` : null,
     busyCmd ? `✳ /${busyCmd}…` : pending ? `✳ ${elapsed}s · esc interrupts` : '/help',
   ]
     .filter(Boolean)
@@ -407,6 +459,18 @@ function TranscriptItem({ item, columns }: { item: Item; columns: number }) {
               {item.score != null ? ` · ${item.score}/10` : ''} — act on it in the web app or just reply here
             </Text>
           </Box>
+        </Box>
+      );
+    case 'approvalPending':
+      return (
+        <Box marginBottom={1}>
+          <Text color="yellow">{item.text}</Text>
+        </Box>
+      );
+    case 'approvalResolved':
+      return (
+        <Box marginBottom={1}>
+          <Text color={APPROVAL_RESOLVED_COLOR[item.status]}>{item.text}</Text>
         </Box>
       );
     case 'turn': {

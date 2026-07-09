@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   JudgmentOutputSchema,
-  SOURCES,
   type JudgmentOutput,
   type WsEvent,
 } from '@botty/shared';
 import { createBus, type Bus } from '../../src/bus/index.js';
-import type { HeartbeatConfig } from '../../src/config/parse.js';
+import { parseHeartbeat, type HeartbeatConfig } from '../../src/config/parse.js';
 import { Db } from '../../src/db/index.js';
 import type { LlmClient, StructuredRequest } from '../../src/llm/types.js';
 import { createMemory } from '../../src/memory/index.js';
@@ -15,20 +14,10 @@ import { runTick, type TickDeps } from '../../src/loop/tick.js';
 
 function heartbeat(over: Partial<HeartbeatConfig> = {}): HeartbeatConfig {
   return {
-    tickIntervalMin: 20,
+    ...parseHeartbeat('', 'sim'), // defaults for every knob (sim source intervals: 1m)
     workingHours: { start: '00:00', end: '00:00' }, // start === end ⇒ gate off (always within)
     quietHours: { start: '00:00', end: '00:00' }, // start === end ⇒ never quiet
     activeDays: [0, 1, 2, 3, 4, 5, 6],
-    morningBriefAt: '08:45',
-    eveningBriefAt: '18:00',
-    surfacingThreshold: 7,
-    maxSurfacesPerTask: 3,
-    maxProactivePerHour: 2,
-    minGapBetweenNudgesMin: 30,
-    sources: Object.fromEntries(SOURCES.map((s) => [s, { enabled: true, intervalMin: 1 }])) as HeartbeatConfig['sources'],
-    instructions: '',
-    thisWeek: '',
-    warnings: [],
     ...over,
   };
 }
@@ -228,20 +217,25 @@ describe('runTick', () => {
     expect(skipped.droppedActions[0]!.reason).toBe('below_threshold');
   });
 
-  it('judgment failure lands in tick_log.error and still broadcasts', async () => {
+  it('judgment failure retries once, then fails open: clean no-actions tick, error recorded', async () => {
     const task = db.insertTask({ description: 'Anything at all', source: 'manual' })!;
     db.raw
       .prepare('UPDATE tasks SET created_at=? WHERE id=?')
       .run(new Date(Date.now() - 5 * 3_600_000).toISOString(), task.id);
     const { deps } = makeDeps(db, bus, heartbeat(), skipAll);
-    deps.llm = {
-      ...deps.llm,
-      structured: async () => {
-        throw new Error('boom');
-      },
-    };
+    const failing = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    deps.llm = { ...deps.llm, structured: failing as unknown as typeof deps.llm.structured };
     const id = await runTick(deps, { trigger: 'run-now' });
-    expect(db.getTick(id)!.error).toBe('boom');
+    const tick = db.getTick(id)!;
+    expect(failing).toHaveBeenCalledTimes(2); // one retry
+    expect(tick.error).toContain('boom');
+    // Fail-open (#6b): the tick still records its bookkeeping and zero actions.
+    expect(tick.candidatesIn).toBe(1);
+    expect(tick.candidatesAfterRules).toBe(1);
+    expect(JSON.parse(tick.actionsJson!)).toEqual([]);
+    expect(tick.skippedJson).toContain('judgment_error');
     expect(events.some((e) => e.type === 'tick.completed')).toBe(true);
   });
 });

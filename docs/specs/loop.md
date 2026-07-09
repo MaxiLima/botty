@@ -31,22 +31,27 @@ briefings, and the ingest `SourceScheduler`):
    no-op (at most one `off_hours` tick row on entry). Manual trigger (`run-now`) bypasses
    gates 1–3.
 2. Timing gates: quiet hours / inactive day ⇒ record skipped tick, done.
-3. Expire stale surfaces (response tracker window 24 h ⇒ `response_type='expired'`).
-4. Gather candidates: open tasks tagged with reminder reasons — `DUE_SOON` (due ≤ 2d),
-   `NEVER_SURFACED` (created > 4h ago, surface_count=0), `STALE` (no update 5d+), plus
-   `MEETING_PREP` candidates from calendar. Union, deduped by task.
+3. Expire stale surfaces (response tracker window `response_window_hours`, default 24 h ⇒
+   `response_type='expired'`).
+4. Gather candidates: open tasks tagged with reminder reasons — `DUE_SOON` (due ≤
+   `due_soon_days`, default 2), `NEVER_SURFACED` (created > `never_surfaced_min_age_hours`
+   ago, default 4, surface_count=0), `STALE` (no update `stale_after_days`+, default 5), plus
+   `MEETING_PREP` candidates from calendar (`meeting_prep_lead_min`). Union, deduped by task.
+   Due checklist items ('## Tasks', below) are computed here too — no LLM cost.
 5. **Layer 1 — rules filter** (pure function, no LLM). Nine gates, cheap first; each rejection
    logged with gate name into the tick's `skipped_json`:
-   1. cooldown by surface_count {1→48h, 2→96h, 3+→7d} since last_surfaced_at
+   1. cooldown by surface_count (`surface_cooldown_hours`, default {1→48h, 2→96h, 3+→7d})
+      since last_surfaced_at
    2. hard cap surface_count ≥ max_surfaces_per_task (default 3) unless due < 48h
    3. snoozed (snooze_until > now)
    4. closed status
    5. quiet hours (redundant guard)
    6. global min_gap_between_nudges (default 30 min) since last surface of any task
-   7. user active in chat within 2 min
+   7. user active in chat within `chat_active_gate_min` (default 2 min)
    8. hourly cap max_proactive_per_hour (default 2)
    9. requester muted
-6. No survivors ⇒ record tick, done (no LLM call — this matters for cost and inspectability).
+6. No survivors AND no due checklist items ⇒ record tick, done (no LLM call — this matters
+   for cost and inspectability).
 7. Build context: heartbeat instructions + PERSONA excerpt + candidate cards (id, description,
    requester+tier, age, status, priority, timesSurfaced, lastSurfaced, due, reminderReason,
    recent response history for that task).
@@ -62,7 +67,8 @@ briefings, and the ingest `SourceScheduler`):
    System prompt: actionability gate first; respect dismissal history; strong bias to skip;
    at most ONE notify per tick unless something is due <24h. No `mark_done` here — auto-close
    is the resolution sweep's job (below).
-9. Validate: drop notify actions with score < surfacing_threshold; cap snoozes at 5/tick.
+9. Validate: drop notify actions with score < surfacing_threshold; cap snoozes at
+   `max_snoozes_per_tick` (default 5).
 10. Execute: `notify` ⇒ proactive_log row + surface_count++ + WS `notification` + macOS
     notification (`terminal-notifier` if present, else `osascript`); `snooze`/`update_priority`
     ⇒ task write + history.
@@ -140,3 +146,59 @@ Loads `ai_decisions` rows of that kind, re-runs `llm.structured` with the stored
 (optionally substituting system prompt/model), prints a per-row diff table (old action vs new)
 and a summary (changed/unchanged counts). Re-runs are recorded with kind suffix `:replay` so
 they don't pollute the primary log. This is the tuning workflow for judgment quality.
+
+## Checklist tasks ('## Tasks' in HEARTBEAT.md)
+
+User-programmable recurring check items, parsed from an optional `## Tasks` section:
+
+```
+## Tasks
+- every 4h: check whether the CI dashboard has red builds I should mention
+- every 1d: remind me to review my inbox zero state
+```
+
+Intervals take `m`/`h`/`d`. Each item gets a stable content-hash id; per-item `lastRunAt`
+lives in the settings table under `heartbeat.checklistState` (single JSON object — no
+schema change). Implementation: `loop/checklist.ts` + the `## Tasks` parser in
+`config/parse.ts`.
+
+On each tick, due items (now − lastRunAt ≥ interval) ride along to judgment as a
+clearly-labeled extra context block. Unlike candidate cards this block is **trusted**
+(user-authored config, not ingested content) and is NOT wrapped in the untrusted-content
+markers. Judgment references items by their `checklist:<id>` candidate id; they are
+notify-or-skip only (snooze/update_priority against a checklist id is dropped,
+`checklist_action`), exempt from the score threshold and the one-notify-per-tick cap, and a
+notify surfaces as a plain `proactive_log` row (surface_kind `checklist`, no task id) + WS
+notification + macOS banner. Checklist surfaces don't count as nudges for min-gap/hourly caps
+(like briefings).
+
+`lastRunAt` advances for every due item after a **successful** judgment pass — whether or not
+judgment spoke (silence is a processed skip). A failed judgment leaves items due so they retry
+next tick.
+
+**Zero-cost floor** (extends step 6): a tick with zero rules-filter survivors AND zero due
+checklist items returns before any LLM call; a due checklist item alone still reaches judgment.
+
+## Judgment fail-open
+
+`runJudgment` failures no longer abort the tick: the call is retried once, and on a second
+failure the tick finishes as a clean "judgment_error → no actions" outcome — candidate/rules
+bookkeeping, snooze expiry, and surface expiry from steps 3-5 stay intact, `tick_log.error`
+records the failure, `skipped_json` carries `judgment_error`, and due checklist items are NOT
+marked as run. Mirrors the resolution sweep's fail-toward-leaving-tasks-open per-task catch.
+
+## Heartbeat knobs & config last-known-good
+
+Every loop constant is now a `## Behavior` key in HEARTBEAT.md (defaults in
+`HEARTBEAT_DEFAULTS`): `max_snoozes_per_tick`, `response_window_hours`,
+`chat_active_gate_min`, `session_idle_seal_min`, `surface_cooldown_hours: 48/96/168`
+(1st/2nd/3rd+ surface), `meeting_prep_lead_min`, `due_soon_days`,
+`never_surfaced_min_age_hours`, `stale_after_days`, `max_resolution_checks_per_sweep`,
+`resolution_check_cooldown_min`, `resolution_confidence_min`. (`session_idle_seal_min` and
+`chat_active_gate_min` are parsed but the chat-side consumers still read the defaults.)
+
+A heartbeat.md revision that parses with warnings never replaces a previously clean config:
+the ConfigManager keeps serving the **last-known-good** parse, exposes the rejected revision's
+warnings via `heartbeatIssues()` (surfaced in `GET /api/config` as `issues.heartbeat` and in
+the `config.changed` WS payload's optional `warnings`), and adopts the file again on the next
+clean parse. Booting with a broken file serves the per-field-defaulted parse plus warnings.

@@ -21,6 +21,11 @@ export function badRequest(detail: string): HttpError {
   return new HttpError(400, 'validation_error', detail);
 }
 
+/** State conflict — e.g. resolving a pending_actions row that isn't pending anymore. */
+export function conflict(detail: string): HttpError {
+  return new HttpError(409, 'conflict', detail);
+}
+
 export function zodDetail(error: ZodError): string {
   return error.issues
     .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message))

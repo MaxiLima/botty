@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatTurn } from '@botty/shared';
-import { applyChunk, applyThinking, applyToolUse, newPending, takeUnseen } from '../src/transcript.js';
+import type { ChatTurn, PendingActionStatus } from '@botty/shared';
+import {
+  applyChunk,
+  applyThinking,
+  applyToolUse,
+  formatApprovalPendingLine,
+  formatApprovalResolvedLine,
+  newPending,
+  takeUnseen,
+} from '../src/transcript.js';
 
 const turn = (id: string): ChatTurn => ({
   id,
@@ -41,6 +49,28 @@ describe('pending reducers', () => {
     p = applyToolUse(p, 't1', 'read_file', 'package.json');
     p = applyToolUse(p, 't1', 'grep');
     expect(p.tools).toEqual(['read_file — package.json', 'grep']);
+  });
+});
+
+describe('formatApprovalPendingLine', () => {
+  it('renders the inline approval-needed notice', () => {
+    expect(formatApprovalPendingLine('send a slack message to #general')).toBe(
+      'botty ⧗ approval needed: send a slack message to #general — approve in the web app',
+    );
+  });
+});
+
+describe('formatApprovalResolvedLine', () => {
+  it('renders a distinct short line per terminal status', () => {
+    const cases: [PendingActionStatus, string][] = [
+      ['executed', '✓ executed — send a slack message'],
+      ['failed', '✗ failed — send a slack message'],
+      ['dismissed', '· dismissed — send a slack message'],
+      ['expired', '· expired — send a slack message'],
+    ];
+    for (const [status, expected] of cases) {
+      expect(formatApprovalResolvedLine(status, 'send a slack message')).toBe(expected);
+    }
   });
 });
 

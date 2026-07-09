@@ -79,7 +79,13 @@ export async function runJudgment(
 export interface DroppedAction {
   taskId: string;
   type: JudgmentAction['type'];
-  reason: 'below_threshold' | 'snooze_cap' | 'notify_cap' | 'unknown_task';
+  reason:
+    | 'below_threshold'
+    | 'snooze_cap'
+    | 'notify_cap'
+    | 'unknown_task'
+    | 'checklist_action'
+    | 'commitment_action';
 }
 
 export interface ValidatedJudgment {
@@ -92,6 +98,13 @@ export interface ValidatedJudgment {
  * tick, enforce the one-notify-per-tick promise (tasks due within 24h are
  * exempt — see JUDGMENT_SYSTEM), and discard actions referencing task ids
  * that were not candidates.
+ *
+ * Checklist candidate ids (opts.checklistIds, `checklist:*`) are user-scheduled
+ * reminders, not ingested tasks; commitment candidate ids (opts.commitmentIds,
+ * `commitment:*`, see loop/commitments.ts) are inferred follow-ups. Both are
+ * valid targets for `notify` only — exempt from the score threshold and the
+ * one-notify cap — and any snooze / update_priority against them is dropped
+ * ('checklist_action' / 'commitment_action').
  */
 export function validateJudgment(
   output: JudgmentOutput,
@@ -101,6 +114,10 @@ export function validateJudgment(
     maxSnoozesPerTick?: number;
     /** Tasks due within 24h — exempt from the one-notify-per-tick cap. */
     dueSoonTaskIds?: Set<string>;
+    /** Due checklist candidate ids (see loop/checklist.ts) — notify-only. */
+    checklistIds?: Set<string>;
+    /** Due commitment candidate ids (see loop/commitments.ts) — notify-only. */
+    commitmentIds?: Set<string>;
   },
 ): ValidatedJudgment {
   const maxSnoozes = opts.maxSnoozesPerTick ?? HEARTBEAT_DEFAULTS.maxSnoozesPerTick;
@@ -110,15 +127,26 @@ export function validateJudgment(
   let notifies = 0;
 
   for (const action of output.actions) {
-    if (!opts.validTaskIds.has(action.taskId)) {
+    const isChecklist = opts.checklistIds?.has(action.taskId) ?? false;
+    const isCommitment = !isChecklist && (opts.commitmentIds?.has(action.taskId) ?? false);
+    const isExempt = isChecklist || isCommitment;
+    if (!isExempt && !opts.validTaskIds.has(action.taskId)) {
       dropped.push({ taskId: action.taskId, type: action.type, reason: 'unknown_task' });
       continue;
     }
-    if (action.type === 'notify' && action.score < opts.surfacingThreshold) {
+    if (isExempt && action.type !== 'notify') {
+      dropped.push({
+        taskId: action.taskId,
+        type: action.type,
+        reason: isCommitment ? 'commitment_action' : 'checklist_action',
+      });
+      continue;
+    }
+    if (!isExempt && action.type === 'notify' && action.score < opts.surfacingThreshold) {
       dropped.push({ taskId: action.taskId, type: action.type, reason: 'below_threshold' });
       continue;
     }
-    if (action.type === 'notify' && !opts.dueSoonTaskIds?.has(action.taskId)) {
+    if (!isExempt && action.type === 'notify' && !opts.dueSoonTaskIds?.has(action.taskId)) {
       notifies += 1;
       if (notifies > 1) {
         dropped.push({ taskId: action.taskId, type: action.type, reason: 'notify_cap' });

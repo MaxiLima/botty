@@ -276,7 +276,7 @@ function TicksTab() {
 
 // ---------- Decisions ----------
 
-const DECISION_KINDS = ['', 'chat', 'judgment', 'classification', 'extraction', 'briefing'];
+const DECISION_KINDS = ['', 'chat', 'judgment', 'classification', 'extraction', 'briefing', 'seal'];
 
 function DecisionsTab() {
   const [decisions, setDecisions] = useState<AiDecision[]>([]);

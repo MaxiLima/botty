@@ -1,7 +1,10 @@
 # botty — Backlog
 
-Prioritized pending work as of 2026-07-07 (v1 complete: sim-mode end-to-end, chat with
-images/quoting, proactive loop, working-hours hard gate, Botty-branded notifications).
+Prioritized pending work as of 2026-07-09 (v1 complete: sim-mode end-to-end, chat with
+images/quoting, proactive loop, working-hours hard gate, Botty-branded notifications;
+2026-07-09: chat tools + external MCP consent gate, inferred commitments, heartbeat
+checklist tasks, config knob promotion + last-known-good, loop guards — see the ports
+section below).
 
 - ~~Audit sweep + gap closure~~ **shipped 2026-07-07**: 40-issue audit sweep landed —
   security guards (`server/guards.ts`), WS crash-resilience, funnel ERROR-retry
@@ -57,65 +60,84 @@ fixed directly (see git history around 2026-07-09).
 
 ### Features
 
-1. **Chat tools — finish `capture_task` + a minimal action set.** Chat runs with
-   `tools: []` (`llm/sdk.ts`); the spec'd `capture_task` (specs/ingestion.md) was never
-   built, so the assistant can read context but cannot act. Start with four tools:
-   `capture_task`, `task_action` (done/snooze/priority), `memory_search` (FTS already
-   exists), and `session_search` (Hermes pattern: zero-LLM FTS over `chat_turns` with
-   discovery/scroll/browse modes — no embeddings needed). The `chat.toolUse` WS plumbing
-   already exists end-to-end in both UIs. Prerequisite for #3.
-2. **Inferred commitments** (OpenClaw). Hidden post-turn extraction pass detects short-lived
-   follow-ups ("interview tomorrow") → stored as operational state (not tasks, not memory)
-   → delivered via the existing tick when due. Guardrails from the reference design:
-   `maxPerDay` cap (default 3), minimum delay to prevent echo-back right after creation,
-   redelivery context explicitly marked untrusted. Maps to a new candidate reason in
-   `loop/candidates.ts` + one table + one funnel-style extraction prompt.
+1. ~~**Chat tools — finish `capture_task` + a minimal action set.**~~ **shipped 2026-07-09**:
+   four tools live in chat — `capture_task`, `task_action` (done/snooze/dismiss/reopen/
+   priority), `memory_search`, `session_search` (search/recent/browse over past sessions,
+   zero-LLM FTS). Registry in `chat/tools.ts` (never-throwing handlers, `{error}` results);
+   SDK wiring via `tool()` + `createSdkMcpServer()` in-process (`llm/sdk.ts`, built-ins stay
+   disabled); mock LLM gained a deterministic `!tool <name> <json>` trigger for e2e; task ids
+   now ride the chat system prompt so `task_action` is usable. Alongside: **external MCP
+   tools with a consent gate** (not originally backlogged) — `~/.botty/config/mcp.json`
+   (hot-reloaded, last-known-good) declares stdio servers with a default-deny per-tool
+   allowlist `read|action`; `read` executes mid-turn through the agent's own MCP client
+   (`mcp/connections.ts`), `action` only enqueues into `pending_actions` (migration 005;
+   cap 10, dedup, 24h TTL) and executes solely via `POST /api/actions/:id/approve` —
+   approval cards in the web chat thread, read-only lines + count in the TUI. claude.ai
+   connectors remain out of reach (that's still the P0 #1 Agent SDK spike).
+2. ~~**Inferred commitments** (OpenClaw).~~ **shipped 2026-07-09**: hidden post-turn
+   extraction (`chat/commitments.ts`, deferred via the turn queue, haiku) → `commitments`
+   table (migration 004) → tick delivery (`loop/commitments.ts`) with all reference
+   guardrails: `commitments_max_per_day` (3), `commitment_min_age_min` echo-back guard (30),
+   24h stale expiry, and descriptions wrapped in the untrusted-content boundary markers in
+   the judgment prompt. `infer_commitments: off` in heartbeat.md disables the pass.
 3. **Consent-first automation suggestions** (Hermes — their best proactive-UX idea). The
    agent never auto-creates automations; it registers *suggestions* (hard cap 5 pending;
    dismiss latches forever by dedup key) the user accepts with one tap. Sources: recurring
    asks noticed in chat, catalog starters. In botty: a suggestion card in the nudge UI
-   proposing heartbeat.md edits or recurring checklist tasks (#4).
-4. **Structured heartbeat checklist tasks + zero-cost skip** (OpenClaw, plus Hermes's
-   `[SILENT]` sentinel). Optional `tasks:` block in heartbeat.md with per-task `interval` +
-   `prompt`, tracked independently; a tick with no due checklist tasks and no candidates
-   skips the judgment LLM call entirely. Judgment already implements the skip-biased
-   speak/stay-silent contract — this adds the user-programmable side and a zero cost floor.
+   proposing heartbeat.md edits or recurring checklist tasks (#4). **Now unblocked** (chat
+   tools exist, and the pending-actions approval-card pattern is a ready-made UI shape).
+4. ~~**Structured heartbeat checklist tasks + zero-cost skip**~~ **shipped 2026-07-09**:
+   `## Tasks` section in heartbeat.md (`- every <N><m|h|d>: <instruction>`) → interval-
+   tracked items (state in settings, no migration) that ride judgment as trusted entries,
+   notify-only, exempt from score threshold/notify cap; `lastRunAt` advances only on
+   successful judgment. Zero-cost floor: a tick with no survivors, no due checklist items,
+   and no due commitments returns before any LLM call.
 5. **Session-summary memory promotion ("dreaming lite")** (OpenClaw dreaming + Hermes
    curator). Nothing curates memory today (FTS recall over raw records + last-3 seal
    summaries). Weekly job reviews sealed summaries + resolved tasks, proposes durable facts
    into a hot-reloaded `memory.md` config file — **staged for user approval** (Hermes's
    staged-writes valve), never auto-written. Retrieval-frequency scoring can come later.
-6. **Small loop-robustness guards** (Hermes): empty-response recovery (one synthetic nudge
-   retry instead of ending the turn); audit fail-open semantics on judgment/resolution
-   failure paths the way the funnel already degrades classifier failure to extraction.
+6. ~~**Small loop-robustness guards** (Hermes)~~ **shipped 2026-07-09**: empty chat response
+   retries once with a synthetic continuation nudge (`EMPTY_RESPONSE_NUDGE`, sdk.ts); a
+   failed judgment retries once then degrades to a clean "judgment_error → no actions" tick
+   (bookkeeping intact, checklist items left due for retry) instead of failing the tick.
 
 ### Config improvements
 
-- **Promote stranded knobs into heartbeat.md.** `surfaceCooldownHours`, `maxSnoozesPerTick`,
-  `responseWindowHours`, `chatActiveGateMin`, `sessionIdleSealMin`, `meetingPrepLeadMin`,
-  resolution-sweep limits already sit in `HEARTBEAT_DEFAULTS` (shared/src/constants.ts) but
-  the parser never reads them from the file. Same for candidate thresholds (due ≤2d,
-  never-surfaced >4h, stale ≥5d) hardcoded in `loop/candidates.ts`.
+- ~~**Promote stranded knobs into heartbeat.md.**~~ **shipped 2026-07-09**: all nine
+  stranded `HEARTBEAT_DEFAULTS` knobs plus the three candidate thresholds
+  (`due_soon_days`, `never_surfaced_min_age_hours`, `stale_after_days`) are parsed from
+  `## Behavior` and wired to their consumers (candidates, rules-filter, resolution sweep,
+  response tracker, chat idle-seal, judgment snooze cap); documented in the config
+  template with a template-parses-clean guard test. One seam: the duplicate meeting-prep
+  query in `ingest/structured.ts` still reads the default lead min (the live loop path is
+  config-wired) — converge with the existing P2 dedup item.
 - **Prompts as hot-reloaded config files.** All five system prompts (judgment, resolution,
   seal-summary, classifier/extractor, briefing) are hardcoded in source. Move to
   `~/.botty/config/prompts/*.md` behind the existing chokidar watcher; the replay CLI is
   the ready-made safety net (edit → replay last N decisions → diff).
-- **Cheap-model overrides for housekeeping** (both repos converge on this). `llm.models`
-  routing exists but seal summaries/briefings run on sonnet; default housekeeping tasks to
-  haiku. Pairs with the P2 "Settings UI for model routing" item.
-- **Config fail-fast + last-known-good** (OpenClaw). Parser warnings are currently
-  advisory; on invalid heartbeat.md, keep the last-known-good config active and surface a
-  visible warning card.
+- ~~**Cheap-model overrides for housekeeping**~~ **shipped 2026-07-09** for seal summaries:
+  new `'seal'` LlmTask defaulting to haiku (`summarizeSession` no longer burns sonnet);
+  costs/replay/Inspector know the kind. Morning/evening briefings deliberately stay on
+  sonnet (user-facing) — still overridable via `llm.models`.
+- ~~**Config fail-fast + last-known-good** (OpenClaw).~~ **shipped 2026-07-09** for
+  heartbeat.md and mcp.json: a warning-producing hot reload keeps serving the
+  last-known-good config; warnings ride the `config.changed` WS broadcast and
+  `issues.{heartbeat,mcp}` in `GET /api/config`. Remaining seam: the web Config page
+  doesn't render `issues.*` as a persistent warning card yet (save-time warnings show
+  inline as before).
 - **Context-budget legibility** (OpenClaw `/context detail`). The memory char budgets
   (8k/3.2k/1.4k in `memory/index.ts`) truncate silently; expose a per-section byte
   breakdown (persona/team/recall/tasks) in the Inspector so a clipped persona.md is visible.
 
 ### Deliberately not ported (revisit later)
 
-Skills engine (cut from v1 for good reason; revisit only after chat tools exist),
-subagents/multi-agent routing, and the sandboxing stack (becomes relevant the moment chat
-tools land — the untrusted-content boundary-marker pattern was applied to the judgment
-prompt as part of the 2026-07-09 bug fixes).
+Skills engine (chat tools now exist, so this is revisitable), subagents/multi-agent
+routing, and the sandboxing stack. On sandboxing: chat tools landed 2026-07-09 with the
+first layer in place — built-in SDK tools stay disabled, external MCP tools are
+default-deny allowlisted, outward-facing (`action`) tools are structurally consent-gated
+behind user approval, and commitment redelivery text rides inside the untrusted-content
+boundary markers. A fuller sandbox story is still open if/when tools grow beyond this.
 
 ## P2 — known seams (from the build, all minor)
 
@@ -126,7 +148,17 @@ prompt as part of the 2026-07-09 bug fixes).
   read-only in the TUI. Zero backend changes needed.
 
 - Nudge cards are client-store only — lost on page reload. Add a notification-history read from
-  `proactive_log` and interleave into chat history.
+  `proactive_log` and interleave into chat history. (Approval cards partially share this:
+  resolved ones persist in `pending_actions` but the web store only hydrates `pending` on
+  load, so resolved cards vanish on reload too.)
+- **mcp.json has no UI**: hand-edit only (hot reload + `issues.mcp` catch mistakes). A
+  Config-page editor with the same validate-on-save flow as the markdown files would fit.
+- **JSON-Schema→zod converter is best-effort** (`mcp/schema.ts`): flat schemas convert
+  fully; nested/exotic constructs degrade to permissive `z.unknown()` with the raw schema
+  embedded in the tool description. Tighten per-construct as real MCP servers surface gaps.
+- **Judgment-replay pending**: the judgment prompt gained checklist/commitment context
+  blocks on 2026-07-09 (on top of the earlier injection-guard change) — curate and replay
+  recorded judgment decisions before trusting proactive behavior on real traffic.
 - ~~**Usage panel**: tokens/latency per call are already in `ai_decisions`; surface daily totals
   per task-kind in the UI (pairs with the working-hours token-saving goal).~~ **shipped
   2026-07-08** as the Costs report: `GET /api/costs` prices the `ai_decisions` rollup at

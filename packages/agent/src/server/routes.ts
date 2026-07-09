@@ -6,6 +6,7 @@ import {
   ChatMessageRequestSchema,
   ConfigSaveRequestSchema,
   MuteRequestSchema,
+  PendingActionStatusSchema,
   SOURCES,
   TaskActionRequestSchema,
   TaskStatusSchema,
@@ -17,7 +18,7 @@ import type { AgentContext } from '../context.js';
 import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { nowIso, type Db } from '../db/index.js';
-import { badRequest, notFound, param, parseBody, queryInt, queryStr, wrap } from './errors.js';
+import { badRequest, conflict, notFound, param, parseBody, queryInt, queryStr, wrap } from './errors.js';
 import { buildCostsReport, pricingWithOverrides } from './costs.js';
 import { nanoid } from 'nanoid';
 import { notifyMacos } from '../loop/notify-macos.js';
@@ -59,7 +60,7 @@ function openTaskCountsBy(db: Db, column: 'requested_by' | 'project_id'): Map<st
 // ---------- router ----------
 
 export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: Loop }): Router {
-  const { db, bus, config, chat, env } = ctx;
+  const { db, bus, config, chat, env, pendingActions } = ctx;
   const router = Router();
 
   /** Full refreshed open board — pushed on every task write. */
@@ -317,6 +318,9 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
           team: config.raw('team'),
           heartbeat: config.raw('heartbeat'),
         },
+        // Non-null when the on-disk file has parse warnings: the served config
+        // is the last-known-good (or boot defaults) — see ConfigManager.
+        issues: { heartbeat: config.heartbeatIssues(), mcp: config.mcpIssues() },
       });
     }),
   );
@@ -331,6 +335,46 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
       const { content } = parseBody(ConfigSaveRequestSchema, req.body);
       const { warnings } = config.save(name, content);
       res.json({ ok: true, warnings });
+    }),
+  );
+
+  // ----- pending actions (consent-gated external MCP tools) -----
+
+  router.get(
+    '/actions',
+    wrap((req, res) => {
+      const raw = queryStr(req.query.status) ?? 'pending';
+      const parsed = PendingActionStatusSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw badRequest(`status must be one of ${PendingActionStatusSchema.options.join(', ')}`);
+      }
+      res.json({ actions: pendingActions.list(parsed.data) });
+    }),
+  );
+
+  router.post(
+    '/actions/:id/approve',
+    wrap(async (req, res) => {
+      const id = param(req, 'id');
+      const outcome = await pendingActions.approve(id);
+      if (outcome.kind === 'not_found') throw notFound(`action ${id}`);
+      if (outcome.kind === 'not_pending') {
+        throw conflict(`action ${id} is not pending (status: ${outcome.action.status})`);
+      }
+      res.json({ action: outcome.action });
+    }),
+  );
+
+  router.post(
+    '/actions/:id/dismiss',
+    wrap((req, res) => {
+      const id = param(req, 'id');
+      const outcome = pendingActions.dismiss(id);
+      if (outcome.kind === 'not_found') throw notFound(`action ${id}`);
+      if (outcome.kind === 'not_pending') {
+        throw conflict(`action ${id} is not pending (status: ${outcome.action.status})`);
+      }
+      res.json({ action: outcome.action });
     }),
   );
 

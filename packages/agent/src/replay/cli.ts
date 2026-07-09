@@ -39,6 +39,8 @@ const SCHEMAS: Record<ReplayableKind, z.ZodType<unknown>> = {
   extraction: ExtractorOutputSchema,
   briefing: BriefingOutputSchema,
   resolution: ResolutionOutputSchema,
+  // Session-seal summaries share BriefingOutputSchema's { title, body } shape.
+  seal: BriefingOutputSchema,
 };
 
 interface RowResult {
@@ -177,6 +179,7 @@ function summarize(kind: ReplayableKind, output: unknown): string {
       return `${n('tasks')} tasks · ${n('decisions')} decisions · ${n('people')} people`;
     }
     case 'briefing':
+    case 'seal':
       return String(o.title ?? '').slice(0, 48) || '(untitled)';
     case 'resolution':
       return `${o.resolved ? 'resolve' : 'keep'}(${o.confidence as number})`;

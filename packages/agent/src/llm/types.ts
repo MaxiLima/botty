@@ -12,6 +12,26 @@ export type ChatStreamEvent =
   | { type: 'tool_use'; name: string; summary?: string }
   | { type: 'done' };
 
+/**
+ * A chat tool the model may call mid-turn (registry: chat/tools.ts). Kept as a
+ * neutral shape here so the llm layer never imports the chat package: the real
+ * SDK client wraps these via the Agent SDK's tool()/createSdkMcpServer(), the
+ * mock invokes execute() directly on the `!tool` trigger.
+ */
+export interface ChatToolSpec {
+  name: string;
+  description: string;
+  /** zod raw shape (property → schema) — exactly what the Agent SDK's tool() takes. */
+  inputSchema: z.ZodRawShape;
+  /** Short human-readable line for the chat.toolUse WS event (e.g. the task description). */
+  summarize(input: Record<string, unknown>): string;
+  /**
+   * Run the tool. Never throws — validation and handler errors come back as
+   * `{ error: string }` results the model can read, so a bad call can't kill the turn.
+   */
+  execute(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
 /** Inline image sent alongside a chat prompt (agent-internal; not part of @botty/shared). */
 export interface ChatTurnAttachment {
   mimeType: string;
@@ -26,6 +46,8 @@ export interface ChatTurnRequest {
   attachments?: ChatTurnAttachment[];
   /** Assembled from PERSONA.md + memory context. */
   systemPrompt: string;
+  /** Chat tools the model may call this turn (capture_task, task_action, …). */
+  tools?: ChatToolSpec[];
   onEvent: (e: ChatStreamEvent) => void;
 }
 

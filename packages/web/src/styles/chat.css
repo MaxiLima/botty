@@ -281,6 +281,99 @@
   font-size: 12px;
 }
 
+/* approval cards — consent-gated external tool calls. Visually distinct from
+   nudges (an FYI) since this is a permission gate: amber accent, boxed body. */
+.turn-approval .turn-body {
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.05);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.turn-approval-executed .turn-body {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.05);
+}
+.turn-approval-failed .turn-body {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.05);
+}
+.turn-approval-dismissed .turn-body,
+.turn-approval-expired .turn-body {
+  border-color: var(--border);
+  background: transparent;
+  opacity: 0.7;
+}
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.approval-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--amber);
+}
+.turn-approval-executed .approval-badge {
+  color: var(--green);
+}
+.turn-approval-failed .approval-badge {
+  color: var(--red);
+}
+.turn-approval-dismissed .approval-badge,
+.turn-approval-expired .approval-badge {
+  color: var(--faint);
+}
+.approval-target {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.approval-summary {
+  margin: 4px 0 8px;
+  font-size: 13px;
+}
+.approval-args-inline {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: var(--surface-3);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.btn-approve {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: var(--green);
+  font-weight: 600;
+}
+.btn-approve:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.22);
+}
+.approval-outcome {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.approval-outcome-ok {
+  color: var(--green);
+}
+.approval-outcome-error {
+  color: var(--red);
+}
+.approval-outcome-muted {
+  color: var(--faint);
+}
+
 /* legacy notif-* pieces still used by Tasks/People pages */
 .notif-kind {
   font-size: 10px;

@@ -11,7 +11,7 @@ describe('Db', () => {
     const versions = db.raw.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {
       version: number;
     }[];
-    expect(versions.map((v) => v.version)).toEqual([1, 2, 3]);
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('people round-trip: team upsert derives tier from weight and updates in place', () => {

@@ -1,7 +1,13 @@
 import { useEffect } from 'react';
 import { navigate, useRoute, type Page } from './lib/router.js';
 import { startWs, useWsStatus } from './lib/ws.js';
-import { initStores, useOpenTaskCount, useStoreRefetchOnReconnect, useUnseenNotificationCount } from './lib/stores.js';
+import {
+  initStores,
+  useOpenTaskCount,
+  usePendingActionCount,
+  useStoreRefetchOnReconnect,
+  useUnseenNotificationCount,
+} from './lib/stores.js';
 import { ChatPage } from './pages/ChatPage.js';
 import { TasksPage } from './pages/TasksPage.js';
 import { PeoplePage } from './pages/PeoplePage.js';
@@ -36,6 +42,7 @@ export function App() {
   const wsStatus = useWsStatus();
   const openCount = useOpenTaskCount();
   const unseen = useUnseenNotificationCount();
+  const pendingApprovals = usePendingActionCount();
   useStoreRefetchOnReconnect();
 
   // Ctrl/Cmd+1..5 page switching.
@@ -74,6 +81,11 @@ export function App() {
               <span className="nav-label">{label}</span>
               {page === 'tasks' && openCount !== null && openCount > 0 && (
                 <span className="nav-badge">{openCount}</span>
+              )}
+              {page === 'chat' && pendingApprovals > 0 && (
+                <span className="nav-badge nav-badge-warn" title={`${pendingApprovals} approval(s) waiting on you`}>
+                  {pendingApprovals}
+                </span>
               )}
               {page === 'chat' && unseen > 0 && <span className="nav-badge nav-badge-hot">{unseen}</span>}
             </button>

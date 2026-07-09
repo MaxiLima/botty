@@ -71,12 +71,13 @@ describe('chat service', () => {
 
     const sealed = db.getSessionMeta(first.id)!;
     expect(sealed.status).toBe('sealed');
-    expect(sealed.summary).toContain('[mock]'); // mock briefing summary
+    expect(sealed.summary).toContain('[mock]'); // mock seal summary
     expect(db.recentSealedSummaries(3)).toHaveLength(1);
-    // sealing recorded a briefing ai_decision tied to the session
-    const briefings = db.listAiDecisions({ kind: 'briefing' });
-    expect(briefings).toHaveLength(1);
-    expect(briefings[0]!.relatedRef).toBe(first.id);
+    // sealing recorded a 'seal' ai_decision (cheap-model housekeeping task, not 'briefing')
+    const seals = db.listAiDecisions({ kind: 'seal' });
+    expect(seals).toHaveLength(1);
+    expect(seals[0]!.relatedRef).toBe(first.id);
+    expect(seals[0]!.model).toBe('claude-haiku-4-5');
   });
 
   it('explicit seal() returns without waiting on the LLM summary', async () => {
@@ -152,7 +153,7 @@ describe('chat service', () => {
     const sealed = db.getSessionMeta(first.id)!;
     expect(sealed.status).toBe('sealed');
     expect(sealed.summary).toContain('[mock]');
-    expect(db.listAiDecisions({ kind: 'briefing' })).toHaveLength(1);
+    expect(db.listAiDecisions({ kind: 'seal' })).toHaveLength(1);
     // both exchanges landed in the single new session
     const turns = db.turnsForSession(db.activeSession()!.id);
     expect(turns.filter((t) => t.role === 'user')).toHaveLength(2);

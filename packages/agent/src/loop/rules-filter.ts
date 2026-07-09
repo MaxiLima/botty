@@ -25,6 +25,10 @@ export interface RulesConfig {
   maxSurfacesPerTask: number;
   maxProactivePerHour: number;
   minGapBetweenNudgesMin: number;
+  /** Gate 1: per-task cooldown hours keyed by surface_count (1/2/3+). */
+  surfaceCooldownHours?: Record<number, number>;
+  /** Gate 7: user-active window in minutes. */
+  chatActiveGateMin?: number;
 }
 
 export interface RulesInputs {
@@ -49,9 +53,9 @@ const NUDGE_KINDS = new Set(['nudge', 'meeting_prep']);
 
 const HOUR_MS = 3_600_000;
 
-function cooldownHours(surfaceCount: number): number {
+function cooldownHours(surfaceCount: number, table?: Record<number, number>): number {
   const key = Math.min(Math.max(surfaceCount, 1), 3);
-  return HEARTBEAT_DEFAULTS.surfaceCooldownHours[key] ?? 168;
+  return (table ?? HEARTBEAT_DEFAULTS.surfaceCooldownHours)[key] ?? 168;
 }
 
 export function applyRulesFilter(
@@ -72,7 +76,8 @@ export function applyRulesFilter(
     lastNudgeMs > 0 && nowMs - lastNudgeMs < config.minGapBetweenNudgesMin * 60_000;
   const userActive =
     inputs.lastUserChatAt != null &&
-    nowMs - Date.parse(inputs.lastUserChatAt) < HEARTBEAT_DEFAULTS.chatActiveGateMin * 60_000;
+    nowMs - Date.parse(inputs.lastUserChatAt) <
+      (config.chatActiveGateMin ?? HEARTBEAT_DEFAULTS.chatActiveGateMin) * 60_000;
   const hourlyCapReached = nudgesLastHour >= config.maxProactivePerHour;
 
   const survivors: ProactiveCandidate[] = [];
@@ -89,7 +94,9 @@ export function applyRulesFilter(
     // 1. per-task cooldown escalation {1→48h, 2→96h, 3+→7d}
     if (task.surfaceCount > 0 && task.lastSurfacedAt) {
       const sinceMs = nowMs - Date.parse(task.lastSurfacedAt);
-      if (sinceMs < cooldownHours(task.surfaceCount) * HOUR_MS) return 'cooldown';
+      if (sinceMs < cooldownHours(task.surfaceCount, config.surfaceCooldownHours) * HOUR_MS) {
+        return 'cooldown';
+      }
     }
     // 2. hard cap on total surfaces — unless due within 48h
     if (task.surfaceCount >= config.maxSurfacesPerTask) {

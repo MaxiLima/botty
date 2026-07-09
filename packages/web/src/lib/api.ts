@@ -5,6 +5,8 @@ import type {
   ChatTurn,
   ConfigFileName,
   Interaction,
+  PendingAction,
+  PendingActionStatus,
   Person,
   ProactiveLogRow,
   Project,
@@ -109,6 +111,12 @@ export const api = {
   config: () => req<{ files: { persona: string; team: string; heartbeat: string } }>('GET', '/api/config'),
   saveConfig: (name: ConfigFileName, content: string) =>
     req<{ ok: boolean; warnings: string[] }>('PUT', `/api/config/${name}`, { content }),
+
+  // Pending actions (consent-gated external tool calls)
+  actions: (status?: PendingActionStatus) =>
+    req<{ actions: PendingAction[] }>('GET', `/api/actions${qs({ status })}`),
+  approveAction: (id: string) => req<{ action: PendingAction }>('POST', `/api/actions/${id}/approve`, {}),
+  dismissAction: (id: string) => req<{ action: PendingAction }>('POST', `/api/actions/${id}/dismiss`, {}),
 
   // Control
   runLoopNow: () => req<{ tickId: string }>('POST', '/api/loop/run-now', {}),

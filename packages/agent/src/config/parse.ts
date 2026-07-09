@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { HEARTBEAT_DEFAULTS, SOURCES, SOURCE_INTERVALS_REAL, SOURCE_INTERVALS_SIM } from '@botty/shared';
 import type { SourceId } from '@botty/shared';
 
@@ -106,6 +107,23 @@ export function parseTeam(md: string): TeamConfig {
 
 // ---------- HEARTBEAT.md ----------
 
+/**
+ * A user-programmable recurring checklist item from '## Tasks' in heartbeat.md.
+ * Due items are offered to the tick's judgment layer as trusted, user-authored
+ * instructions (unlike ingested candidate content).
+ */
+export interface ChecklistTask {
+  /** Stable content hash of the prompt — survives reordering/re-parsing. */
+  id: string;
+  intervalMin: number;
+  prompt: string;
+}
+
+/** Stable id for a checklist prompt (used as the settings-state key). */
+export function checklistTaskId(prompt: string): string {
+  return createHash('sha256').update(prompt.trim()).digest('hex').slice(0, 12);
+}
+
 export interface HeartbeatConfig {
   tickIntervalMin: number;
   /**
@@ -123,10 +141,39 @@ export interface HeartbeatConfig {
   maxSurfacesPerTask: number;
   maxProactivePerHour: number;
   minGapBetweenNudgesMin: number;
+  maxSnoozesPerTick: number;
+  /** Hours before an unanswered surface expires (response tracker). */
+  responseWindowHours: number;
+  /** Rules gate 7: suppress nudges while the user chatted within this many minutes. */
+  chatActiveGateMin: number;
+  /**
+   * Minutes of chat inactivity before a session is sealed. Parsed here for
+   * completeness; the chat-side consumer still reads HEARTBEAT_DEFAULTS.
+   */
+  sessionIdleSealMin: number;
+  /** Rules gate 1: per-task cooldown hours keyed by surface_count (1/2/3+). */
+  surfaceCooldownHours: Record<number, number>;
+  meetingPrepLeadMin: number;
+  // Candidate-gathering thresholds (tick step 4).
+  dueSoonDays: number;
+  neverSurfacedMinAgeHours: number;
+  staleAfterDays: number;
   /** Resolution sweep: auto-close tasks already handled in their source thread. */
   autoResolveTasks: boolean;
   resolutionSweepIntervalMin: number;
+  maxResolutionChecksPerSweep: number;
+  resolutionCheckCooldownMin: number;
+  /** Minimum LLM confidence (0-1) to auto-close. */
+  resolutionConfidenceMin: number;
+  /** Enable the post-turn commitment-extraction pass (chat/commitments.ts). */
+  inferCommitments: boolean;
+  /** Echo-back guard: a commitment can't be delivered within this many minutes of creation. */
+  commitmentMinAgeMin: number;
+  /** Delivery cap: at most this many commitment notifications in a trailing 24h window. */
+  commitmentsMaxPerDay: number;
   sources: Record<SourceId, { enabled: boolean; intervalMin: number }>;
+  /** '## Tasks': recurring user-programmed checklist items for the tick. */
+  checklistTasks: ChecklistTask[];
   instructions: string;
   thisWeek: string;
   warnings: string[];
@@ -163,11 +210,27 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
     maxSurfacesPerTask: d.maxSurfacesPerTask,
     maxProactivePerHour: d.maxProactivePerHour,
     minGapBetweenNudgesMin: d.minGapBetweenNudgesMin,
+    maxSnoozesPerTick: d.maxSnoozesPerTick,
+    responseWindowHours: d.responseWindowHours,
+    chatActiveGateMin: d.chatActiveGateMin,
+    sessionIdleSealMin: d.sessionIdleSealMin,
+    surfaceCooldownHours: { ...d.surfaceCooldownHours },
+    meetingPrepLeadMin: d.meetingPrepLeadMin,
+    dueSoonDays: d.dueSoonDays,
+    neverSurfacedMinAgeHours: d.neverSurfacedMinAgeHours,
+    staleAfterDays: d.staleAfterDays,
     autoResolveTasks: d.autoResolveTasks,
     resolutionSweepIntervalMin: d.resolutionSweepIntervalMin,
+    maxResolutionChecksPerSweep: d.maxResolutionChecksPerSweep,
+    resolutionCheckCooldownMin: d.resolutionCheckCooldownMin,
+    resolutionConfidenceMin: d.resolutionConfidenceMin,
+    inferCommitments: d.inferCommitments,
+    commitmentMinAgeMin: d.commitmentMinAgeMin,
+    commitmentsMaxPerDay: d.commitmentsMaxPerDay,
     sources: Object.fromEntries(
       SOURCES.map((s) => [s, { enabled: true, intervalMin: sourceDefaults[s] }]),
     ) as HeartbeatConfig['sources'],
+    checklistTasks: [],
     instructions: '',
     thisWeek: '',
     warnings,
@@ -226,13 +289,45 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
   num(behavior, 'max_surfaces_per_task', cfg.maxSurfacesPerTask, (n) => (cfg.maxSurfacesPerTask = n));
   num(behavior, 'max_proactive_per_hour', cfg.maxProactivePerHour, (n) => (cfg.maxProactivePerHour = n));
   num(behavior, 'min_gap_between_nudges_min', cfg.minGapBetweenNudgesMin, (n) => (cfg.minGapBetweenNudgesMin = n));
+  num(behavior, 'max_snoozes_per_tick', cfg.maxSnoozesPerTick, (n) => (cfg.maxSnoozesPerTick = n));
+  num(behavior, 'response_window_hours', cfg.responseWindowHours, (n) => (cfg.responseWindowHours = n));
+  num(behavior, 'chat_active_gate_min', cfg.chatActiveGateMin, (n) => (cfg.chatActiveGateMin = n));
+  num(behavior, 'session_idle_seal_min', cfg.sessionIdleSealMin, (n) => (cfg.sessionIdleSealMin = n));
+  num(behavior, 'meeting_prep_lead_min', cfg.meetingPrepLeadMin, (n) => (cfg.meetingPrepLeadMin = n));
+  num(behavior, 'due_soon_days', cfg.dueSoonDays, (n) => (cfg.dueSoonDays = n));
+  num(behavior, 'never_surfaced_min_age_hours', cfg.neverSurfacedMinAgeHours, (n) => (cfg.neverSurfacedMinAgeHours = n));
+  num(behavior, 'stale_after_days', cfg.staleAfterDays, (n) => (cfg.staleAfterDays = n));
   num(behavior, 'resolution_sweep_interval_min', cfg.resolutionSweepIntervalMin, (n) => (cfg.resolutionSweepIntervalMin = n));
+  num(behavior, 'max_resolution_checks_per_sweep', cfg.maxResolutionChecksPerSweep, (n) => (cfg.maxResolutionChecksPerSweep = n));
+  num(behavior, 'resolution_check_cooldown_min', cfg.resolutionCheckCooldownMin, (n) => (cfg.resolutionCheckCooldownMin = n));
+  const confidence = behavior.get('resolution_confidence_min');
+  if (confidence !== undefined) {
+    const n = Number(confidence);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) cfg.resolutionConfidenceMin = n;
+    else warnings.push(`Invalid resolution_confidence_min: "${confidence}" (expected 0-1, using ${cfg.resolutionConfidenceMin})`);
+  }
+  // surface_cooldown_hours: 48/96/168 — cooldowns for surface_count 1 / 2 / 3+.
+  const cooldowns = behavior.get('surface_cooldown_hours');
+  if (cooldowns !== undefined) {
+    const m = cooldowns.match(/^(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)$/);
+    if (m) cfg.surfaceCooldownHours = { 1: Number(m[1]), 2: Number(m[2]), 3: Number(m[3]) };
+    else warnings.push(`Invalid surface_cooldown_hours "${cooldowns}" (expected e.g. 48/96/168 for 1st/2nd/3rd+ surface)`);
+  }
   const autoResolve = behavior.get('auto_resolve_tasks');
   if (autoResolve !== undefined) {
     const on = /^(on|enabled|true|yes)\b/i.test(autoResolve);
     const off = /^(off|disabled|false|no)\b/i.test(autoResolve);
     if (on || off) cfg.autoResolveTasks = on;
     else warnings.push(`Unclear value "${autoResolve}" for auto_resolve_tasks (keeping ${cfg.autoResolveTasks ? 'on' : 'off'})`);
+  }
+  num(behavior, 'commitment_min_age_min', cfg.commitmentMinAgeMin, (n) => (cfg.commitmentMinAgeMin = n));
+  num(behavior, 'commitments_max_per_day', cfg.commitmentsMaxPerDay, (n) => (cfg.commitmentsMaxPerDay = n));
+  const inferCommitments = behavior.get('infer_commitments');
+  if (inferCommitments !== undefined) {
+    const on = /^(on|enabled|true|yes)\b/i.test(inferCommitments);
+    const off = /^(off|disabled|false|no)\b/i.test(inferCommitments);
+    if (on || off) cfg.inferCommitments = on;
+    else warnings.push(`Unclear value "${inferCommitments}" for infer_commitments (keeping ${cfg.inferCommitments ? 'on' : 'off'})`);
   }
 
   const sources = kv('Sources');
@@ -249,6 +344,38 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
     entry.enabled = enabled;
     const every = value.match(/every\s+(\d+)\s*m/i);
     if (every) entry.intervalMin = Number(every[1]);
+  }
+
+  // '## Tasks' — recurring checklist items: `- every 4h: <instruction>`.
+  const tasksSection = extractSection(md, 'Tasks');
+  if (tasksSection !== null) {
+    const seen = new Set<string>();
+    for (const line of tasksSection.split('\n')) {
+      const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+      if (!bullet) continue; // non-bullet lines (prose, comments) are ignored
+      const text = bullet[1]!.trim();
+      if (!text) continue;
+      const m = text.match(/^every\s+(\d+)\s*(m|min|mins|minutes?|h|hrs?|hours?|d|days?)\s*:\s*(.+)$/i);
+      if (!m) {
+        warnings.push(`Unparseable checklist task: "${text.slice(0, 60)}" (expected "every <N><m|h|d>: <instruction>")`);
+        continue;
+      }
+      const unit = m[2]!.toLowerCase();
+      const mult = unit.startsWith('d') ? 1440 : unit.startsWith('h') ? 60 : 1;
+      const intervalMin = Number(m[1]) * mult;
+      if (!(intervalMin > 0)) {
+        warnings.push(`Checklist task interval must be positive: "${text.slice(0, 60)}"`);
+        continue;
+      }
+      const prompt = m[3]!.trim();
+      const id = checklistTaskId(prompt);
+      if (seen.has(id)) {
+        warnings.push(`Duplicate checklist task ignored: "${prompt.slice(0, 60)}"`);
+        continue;
+      }
+      seen.add(id);
+      cfg.checklistTasks.push({ id, intervalMin, prompt });
+    }
   }
 
   cfg.instructions = (extractSection(md, 'Instructions') ?? '').trim();

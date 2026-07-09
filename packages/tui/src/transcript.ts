@@ -1,4 +1,4 @@
-import type { ChatTurn } from '@botty/shared';
+import type { ChatTurn, PendingActionStatus } from '@botty/shared';
 
 /** Live (streaming) assistant reply — mirrors the web app's PendingTurn. */
 export interface PendingTurn {
@@ -38,6 +38,26 @@ export function applyThinking(prev: PendingTurn | null, turnId: string, on: bool
 export function applyToolUse(prev: PendingTurn | null, turnId: string, name: string, summary?: string): PendingTurn {
   const p = ensure(prev, turnId);
   return { ...p, thinking: false, tools: [...p.tools, summary ? `${name} — ${summary}` : name] };
+}
+
+// ---------- consent-gated external tool actions (read-only display) ----------
+
+/** `action.pending` — a new approval-required card landed; TUI only shows a notice, acting stays in the web app. */
+export function formatApprovalPendingLine(summary: string): string {
+  return `botty ⧗ approval needed: ${summary} — approve in the web app`;
+}
+
+const RESOLVED_GLYPH: Record<PendingActionStatus, string> = {
+  pending: '⧗',
+  executed: '✓',
+  failed: '✗',
+  dismissed: '·',
+  expired: '·',
+};
+
+/** `action.resolved` — matching short line for the terminal state of a previously announced action. */
+export function formatApprovalResolvedLine(status: PendingActionStatus, summary: string): string {
+  return `${RESOLVED_GLYPH[status]} ${status} — ${summary}`;
 }
 
 /**
