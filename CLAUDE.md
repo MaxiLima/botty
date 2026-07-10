@@ -12,8 +12,9 @@ at them. Rules:
 - **Verify on an isolated instance**: ports **5820/5821** with a temp `BOTTY_DATA_DIR`.
   Full recipe in the `verify` skill (`.claude/skills/verify/SKILL.md`). Sanity check:
   `curl -s http://127.0.0.1:5820/api/health` must show `dbPath` under your temp dir.
-- **Never `pkill tsx`** — the live agent is also `tsx watch`. Kill by port:
-  `lsof -ti tcp:<port> | xargs kill`.
+- **Never `pkill tsx`** — the live agent is also `tsx watch`. Kill by port, and only
+  the listener: `lsof -ti tcp:<port> -sTCP:LISTEN | xargs kill` (without `-sTCP:LISTEN`
+  it also kills connected clients, e.g. a TUI attached to that port).
 - **Never rebuild `packages/web/dist` during verification** — the live 4820 agent
   serves that directory; a mid-verification rebuild breaks the owner's session.
 

@@ -16,8 +16,9 @@ AGENT_PORT=5820 BOTTY_SIM_PORT=5821 BOTTY_SIM_URL=http://localhost:5821 \
 curl -s http://127.0.0.1:5820/api/health   # confirm dbPath is under $S, not ~/.botty
 ```
 
-Kill by port when done (`lsof -ti tcp:5820 | xargs kill`) — never `pkill tsx`
-(the live agent is also `tsx watch`).
+Kill by port when done (`lsof -ti tcp:5820 -sTCP:LISTEN | xargs kill`) — never
+`pkill tsx` (the live agent is also `tsx watch`). Keep `-sTCP:LISTEN`: without it
+the kill also takes out connected clients (e.g. a TUI attached to that port).
 
 ## Web UI
 
