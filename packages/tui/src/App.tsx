@@ -3,10 +3,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import type { ChatTurn, PendingActionStatus } from '@botty/shared';
-import { createApi } from './api.js';
+import { createApi, type ScheduleInfo } from './api.js';
 import { filterCommands, parseSlash, resolveCommand, type Command, type PanelData } from './commands.js';
 import type { TuiConfig } from './config.js';
-import { clock } from './format.js';
+import { clock, scheduleHint } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { face } from './mascot.js';
 import { Panel } from './panels.js';
@@ -17,6 +17,7 @@ import {
   formatApprovalPendingLine,
   formatApprovalResolvedLine,
   newPending,
+  normalizePastedInput,
   takeUnseen,
   type PendingTurn,
 } from './transcript.js';
@@ -30,7 +31,7 @@ type ItemBody =
   | { kind: 'cmd'; text: string }
   | { kind: 'nudge'; message: string; nkind: string; score: number | null }
   /** A reply that errored mid-stream — keep the partial text the user saw. */
-  | { kind: 'partial'; text: string; error: string }
+  | { kind: 'partial'; text: string; error: string; quiet?: boolean }
   /** A consent-gated external tool call the model proposed — approve/dismiss only in the web app. */
   | { kind: 'approvalPending'; text: string }
   | { kind: 'approvalResolved'; text: string; status: PendingActionStatus }
@@ -65,6 +66,13 @@ export function App({ config }: { config: TuiConfig }) {
   const [busyCmd, setBusyCmd] = useState<string | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  /** Optional — undefined until the first successful health poll, and stays
+   * undefined forever against an agent old enough not to report it. */
+  const [schedule, setSchedule] = useState<ScheduleInfo | undefined>(undefined);
+  /** Bumped to force-remount the composer so its internal cursor snaps to the
+   * end of a programmatic draft change (tab-completion) instead of staying at
+   * its pre-completion offset — see the key.tab handler below. */
+  const [inputEpoch, setInputEpoch] = useState(0);
   const wsStatus = useWsStatus();
   const { stdout } = useStdout();
   const columns = stdout?.columns ?? 80;
@@ -83,6 +91,9 @@ export function App({ config }: { config: TuiConfig }) {
   /** Mirror for event handlers that need the current pending without a stale closure. */
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
+  /** turnIds the user asked to interrupt — lets a subsequent chat.error for the
+   * same turn render as a quiet notice instead of the raw SDK diagnostic. */
+  const interruptedRef = useRef(new Set<string>());
 
   const menu = draft.startsWith('/') ? filterCommands(draft) : [];
   const menuOpen = menu.length > 0;
@@ -121,6 +132,10 @@ export function App({ config }: { config: TuiConfig }) {
   );
 
   const bootOkRef = useRef(false);
+  /** True while a loadInitial() call is in flight — guards against a second
+   * concurrent call (the WS 'first open' reconnect race below) double-pushing
+   * the welcome banner. See the loadInitial-race note on useOnReconnect. */
+  const bootingRef = useRef(false);
 
   const refreshApprovals = useCallback(async () => {
     try {
@@ -133,9 +148,12 @@ export function App({ config }: { config: TuiConfig }) {
 
   // Banner (agent info + open-task count) plus history — one parallel round trip.
   const loadInitial = useCallback(async () => {
+    if (bootingRef.current) return;
+    bootingRef.current = true;
     try {
       const [h, t, hist] = await Promise.all([api.health(), api.tasks('open'), api.chatHistory(config.historyLimit)]);
       setTaskCount(t.tasks.length);
+      setSchedule(h.schedule);
       pushItem({
         kind: 'panel',
         panel: { type: 'welcome', version: h.version, mode: h.mode, baseUrl: config.baseUrl, taskCount: t.tasks.length },
@@ -145,6 +163,8 @@ export function App({ config }: { config: TuiConfig }) {
       void refreshApprovals();
     } catch {
       pushItem({ kind: 'error', text: `can't reach the agent at ${config.baseUrl} — is it running?` });
+    } finally {
+      bootingRef.current = false;
     }
   }, [api, appendTurns, config.baseUrl, config.historyLimit, pushItem, refreshApprovals]);
 
@@ -153,6 +173,15 @@ export function App({ config }: { config: TuiConfig }) {
     void loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const refreshSchedule = useCallback(async () => {
+    try {
+      const h = await api.health();
+      setSchedule(h.schedule);
+    } catch {
+      // agent unreachable — leave the last-known hint stale rather than blank
+    }
+  }, [api]);
 
   useOnReconnect((first) => {
     if (first) {
@@ -165,7 +194,16 @@ export function App({ config }: { config: TuiConfig }) {
     pushItem({ kind: 'info', text: 'reconnected — refreshed history' });
     void refreshHistory();
     void refreshApprovals();
+    void refreshSchedule();
   });
+
+  // The schedule (working/quiet hours) has no push event of its own — poll it
+  // occasionally so the statusline hint tracks day/hour boundaries as they
+  // pass, the same way the web app would re-check on navigation.
+  useEffect(() => {
+    const t = setInterval(() => void refreshSchedule(), 5 * 60_000);
+    return () => clearInterval(t);
+  }, [refreshSchedule]);
 
   /** A stream for a turn we didn't start → another client sent a message; pull it in. */
   const adopt = useCallback(
@@ -194,6 +232,7 @@ export function App({ config }: { config: TuiConfig }) {
   });
   useWsEvent('chat.done', (p) => {
     finishedRef.current.add(p.turnId);
+    interruptedRef.current.delete(p.turnId);
     // The turn is in the DB before chat.done is broadcast, so a refetch keeps
     // the transcript ordered (user turn before reply) even on instant replies;
     // the direct append is only a fallback if the refetch fails.
@@ -207,7 +246,18 @@ export function App({ config }: { config: TuiConfig }) {
     // pendingRef, not `pending`: a chunk and its error can land in one batch,
     // and the closure would still see the pre-chunk state.
     const prev = pendingRef.current;
-    if (prev && prev.turnId === p.turnId && prev.text) {
+    // The user's own Esc already told them this turn was being cut off — the
+    // SDK's raw error for it (e.g. an "ede_diagnostic" result) is noise, not
+    // news. Only suppress it for the turn we actually interrupted; a genuine
+    // error on any other turn still shows in full.
+    const wasInterrupted = interruptedRef.current.delete(p.turnId);
+    if (wasInterrupted) {
+      if (prev && prev.turnId === p.turnId && prev.text) {
+        pushItem({ kind: 'partial', text: prev.text, error: 'interrupted', quiet: true });
+      } else {
+        pushItem({ kind: 'info', text: 'interrupted' });
+      }
+    } else if (prev && prev.turnId === p.turnId && prev.text) {
       // Keep the partial reply the user watched stream — don't vaporize it.
       pushItem({ kind: 'partial', text: prev.text, error: p.error });
     } else {
@@ -272,8 +322,16 @@ export function App({ config }: { config: TuiConfig }) {
         );
         void refreshHistory(TAIL_LIMIT); // echo our user turn (persisted before the route returns)
       } catch (err) {
-        setSendError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setSendError(`${msg} (draft kept)`);
         setDraft(text);
+        // Same cursor-desync class as the Tab-completion fix above: restoring
+        // a non-empty draft from outside a keystroke leaves ink-text-input's
+        // internal cursor offset wherever it was (here, 0 — the send() above
+        // just cleared the draft to '', which resets the offset to 0) instead
+        // of at the end, so the next keystroke inserts at the front of the
+        // restored text. Force a remount to re-derive the offset.
+        setInputEpoch((e) => e + 1);
       } finally {
         sendingRef.current = false;
       }
@@ -338,20 +396,33 @@ export function App({ config }: { config: TuiConfig }) {
   useInput((_input, key) => {
     if (menuOpen && key.upArrow) setMenuIndex((i) => (i + menu.length - 1) % menu.length);
     else if (menuOpen && key.downArrow) setMenuIndex((i) => (i + 1) % menu.length);
-    else if (menuOpen && key.tab) setDraft(`/${menu[selected]?.name ?? ''} `);
-    else if (key.escape) {
+    else if (menuOpen && key.tab) {
+      setDraft(`/${menu[selected]?.name ?? ''} `);
+      // ink-text-input tracks the cursor offset in its own internal state and
+      // only clamps it forward when it would land past the new value's end —
+      // a same-length-or-shorter old offset survives a programmatic value
+      // change unchanged, so typing right after Tab inserted mid-string (e.g.
+      // "/pe" -> Tab -> "/people " with the cursor still at index 3 -> typing
+      // "hi" gives "/pehiople "). Bumping the key forces a remount, which
+      // re-derives the initial cursor from the new value's length.
+      setInputEpoch((e) => e + 1);
+    } else if (key.escape) {
       // Interrupting the stream wins (and keeps the draft); Esc clears the
       // draft only when nothing is streaming.
-      if (pending) void api.chatInterrupt().catch(() => undefined);
-      else if (draft) setDraft('');
+      if (pending) {
+        interruptedRef.current.add(pending.turnId);
+        void api.chatInterrupt().catch(() => undefined);
+      } else if (draft) setDraft('');
     }
   });
 
+  const hint = scheduleHint(schedule);
   const status = [
     `${face(wsStatus)} botty`,
     config.baseUrl.replace(/^https?:\/\//, ''),
     `ws ${wsStatus}`,
     taskCount !== null ? `${taskCount} task${taskCount === 1 ? '' : 's'}` : null,
+    hint ? `◔ ${hint}` : null,
     approvalIds.size > 0 ? `⧗ ${approvalIds.size} approval${approvalIds.size === 1 ? '' : 's'}` : null,
     busyCmd ? `✳ /${busyCmd}…` : pending ? `✳ ${elapsed}s · esc interrupts` : '/help',
   ]
@@ -370,9 +441,10 @@ export function App({ config }: { config: TuiConfig }) {
           ›{' '}
         </Text>
         <TextInput
+          key={inputEpoch}
           value={draft}
           onChange={(v) => {
-            setDraft(v);
+            setDraft(normalizePastedInput(v));
             setMenuIndex(0);
           }}
           onSubmit={submit}
@@ -438,11 +510,11 @@ function TranscriptItem({ item, columns }: { item: Item; columns: number }) {
       return (
         <Box flexDirection="column" marginBottom={1}>
           <Text color="magenta" bold>
-            botty <Text dimColor>(incomplete)</Text>
+            botty <Text dimColor>{item.quiet ? '(interrupted)' : '(incomplete)'}</Text>
           </Text>
           <Box marginLeft={2} flexDirection="column">
             <Text>{renderMarkdown(item.text, columns - 4)}</Text>
-            <Text color="red">✗ {item.error}</Text>
+            {item.quiet ? <Text dimColor>· interrupted ·</Text> : <Text color="red">✗ {item.error}</Text>}
           </Box>
         </Box>
       );

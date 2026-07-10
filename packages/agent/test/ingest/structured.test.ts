@@ -148,3 +148,103 @@ describe('github', () => {
     expect(h.db.taskHistory(closed.id).some((r) => r.changedBy === 'funnel' && r.newValue === 'done')).toBe(true);
   });
 });
+
+describe('cross-source dedup on the structured path (live repro: slack first, github second)', () => {
+  it('a slack-extracted PR-review task dedups the later github event for the same PR', async () => {
+    const h = makeHarness();
+
+    // slack check-now first: Marian's DM goes through the full funnel and becomes a task
+    const slackEvent = makeEvent({
+      externalId: 'slack-repro-482',
+      text: 'Hola! Can you review the fraud-rules PR #482 when you get a chance?',
+    });
+    expect(await processEvent(h.ctx, slackEvent)).toBe('EXTRACTED');
+    expect(h.db.listTasks()).toHaveLength(1);
+    const slackTaskId = h.db.listTasks()[0]!.id;
+
+    // github check-now second: the structured event for the SAME PR must not
+    // become a second open task (this exact order was the live e2e gap)
+    const githubEvent = makeEvent({
+      source: 'github',
+      kind: 'pr',
+      externalId: 'gh-repro-482',
+      actor: {},
+      text: 'Review requested: acme-example/fraud-rules#482',
+      meta: { repo: 'acme-example/fraud-rules', number: 482, state: 'open' },
+    });
+    expect(await processEvent(h.ctx, githubEvent)).toBe('DEDUPED');
+    expect(h.db.listTasks()).toHaveLength(1);
+
+    // the stamp names the surviving task for the Inspector
+    const row = h.db.listRawLog().find((r) => r.externalId === 'gh-repro-482')!;
+    const body = JSON.parse(row.body) as {
+      meta: { funnelDetail?: { dedupedTasks?: { existingTaskId: string }[] } };
+    };
+    expect(body.meta.funnelDetail?.dedupedTasks?.[0]?.existingTaskId).toBe(slackTaskId);
+  });
+
+  it('a github event for a DIFFERENT PR number is not deduped — both tasks survive', async () => {
+    const h = makeHarness();
+    expect(
+      await processEvent(h.ctx, makeEvent({
+        externalId: 'slack-repro-482b',
+        text: 'Hola! Can you review the fraud-rules PR #482 when you get a chance?',
+      })),
+    ).toBe('EXTRACTED');
+
+    expect(
+      await processEvent(h.ctx, makeEvent({
+        source: 'github', kind: 'pr', externalId: 'gh-repro-483', actor: {},
+        text: 'Review requested: acme-example/fraud-rules#483',
+        meta: { repo: 'acme-example/fraud-rules', number: 483, state: 'open' },
+      })),
+    ).toBe('UPSERTED');
+
+    expect(h.db.listTasks()).toHaveLength(2);
+  });
+
+  it('jira symmetric: a slack-extracted task naming ACME-123 dedups the later jira issue event', async () => {
+    const h = makeHarness();
+    expect(
+      await processEvent(h.ctx, makeEvent({
+        externalId: 'slack-acme-123',
+        text: 'Can you look at ACME-123 velocity rules today please?',
+      })),
+    ).toBe('EXTRACTED');
+    const slackTaskId = h.db.listTasks()[0]!.id;
+
+    expect(
+      await processEvent(h.ctx, makeEvent({
+        source: 'jira', kind: 'issue', externalId: 'jira-acme-123', actor: {},
+        text: 'ACME-123: tighten velocity rules',
+        meta: { key: 'ACME-123', status: 'To Do' },
+      })),
+    ).toBe('DEDUPED');
+
+    expect(h.db.listTasks()).toHaveLength(1);
+    expect(h.db.listTasks()[0]!.id).toBe(slackTaskId);
+    // no jira task row was created for the ref (accepted v1 trade-off: upstream
+    // status sync for ACME-123 won't attach — see handleTaskSource comment)
+    expect(h.db.getTaskBySourceRef('jira', 'ACME-123')).toBeUndefined();
+  });
+
+  it('jira negative: a different issue key still inserts its own task', async () => {
+    const h = makeHarness();
+    expect(
+      await processEvent(h.ctx, makeEvent({
+        externalId: 'slack-acme-123b',
+        text: 'Can you look at ACME-123 velocity rules today please?',
+      })),
+    ).toBe('EXTRACTED');
+
+    expect(
+      await processEvent(h.ctx, makeEvent({
+        source: 'jira', kind: 'issue', externalId: 'jira-acme-999', actor: {},
+        text: 'ACME-999: tighten velocity rules',
+        meta: { key: 'ACME-999', status: 'To Do' },
+      })),
+    ).toBe('UPSERTED');
+
+    expect(h.db.listTasks()).toHaveLength(2);
+  });
+});

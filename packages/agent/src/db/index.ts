@@ -44,6 +44,8 @@ export interface NewTask {
   source: string;
   sourceRef?: string | null;
   priority?: number;
+  /** 'me' (default) or 'them' — see TaskOwnerSchema in @botty/shared. */
+  owner?: 'me' | 'them';
   requestedBy?: string | null;
   projectId?: string | null;
   dueDate?: string | null;
@@ -347,8 +349,8 @@ export class Db {
     const id = nanoid();
     const res = this.raw
       .prepare(
-        `INSERT INTO tasks (id, description, raw_text, source, source_ref, status, priority, requested_by, project_id, due_date, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, description, raw_text, source, source_ref, status, priority, owner, requested_by, project_id, due_date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(source, source_ref) DO NOTHING`,
       )
       .run(
@@ -358,6 +360,7 @@ export class Db {
         input.source,
         input.sourceRef ?? null,
         input.priority ?? 2,
+        input.owner ?? 'me',
         input.requestedBy ?? null,
         input.projectId ?? null,
         input.dueDate ?? null,

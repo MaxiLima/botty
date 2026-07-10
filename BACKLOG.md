@@ -14,6 +14,16 @@ section below).
   a real field on `/api/raw-log`, repo `CLAUDE.md`, GitHub Actions CI, docs synced to code
   plus new tui/memory spec chapters, and three new skills (sim-scenarios, judgment-replay,
   ship).
+- ~~Task ownership inversion~~ **shipped 2026-07-09**: extraction now tags each task
+  `owner: 'me' | 'them'` (migration 006) — a Tier-1 person's own stated commitment ("I'll
+  send you X tomorrow") is tagged 'them' (a "waiting on" reminder, not a to-do for the
+  user) instead of becoming a P1 task owned by the user. `owner='them'` tasks default to
+  P2 (not P1), are marked "waiting on `<requester>`" in chat/judgment context and the
+  web/TUI task views, and JUDGMENT_SYSTEM phrases their nudges as follow-ups ("Diego
+  promised the latency doc — ping him?") rather than instructions to the user. Live repro:
+  Diego's DM wrongly created "Send latency doc" owned by the user; now correctly tagged
+  `owner='them'`. **Flag for judgment-replay**: JUDGMENT_SYSTEM picked up a new bullet —
+  replay before shipping.
 
 ## P0 — becoming the daily driver
 
@@ -159,6 +169,10 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
 - **Judgment-replay pending**: the judgment prompt gained checklist/commitment context
   blocks on 2026-07-09 (on top of the earlier injection-guard change) — curate and replay
   recorded judgment decisions before trusting proactive behavior on real traffic.
+  **Partially covered 2026-07-09 (fix sweep)**: the hourly-budget + waiting-on prompt
+  changes were replayed against 12 live-DB rows (all skip-days) + 3 notify-bearing rows
+  from the dogfooding DB — zero behavioral drift (only reason-wording noise). The curated
+  eval set over a busier mix is still worth building.
 - ~~**Usage panel**: tokens/latency per call are already in `ai_decisions`; surface daily totals
   per task-kind in the UI (pairs with the working-hours token-saving goal).~~ **shipped
   2026-07-08** as the Costs report: `GET /api/costs` prices the `ai_decisions` rollup at
@@ -177,11 +191,36 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
 - Animated GIFs become static when downscaled client-side (canvas limitation).
 - Quoting a nudge uses the text-preview fallback (nudges have no chat-turn id).
 - Meeting-prep calendar query duplicated in `loop/candidates.ts` and ingest — converge.
-- Near-duplicate task consolidation (cut from v1).
+- ~~Near-duplicate task consolidation~~ **shipped 2026-07-09**: cross-source dedup
+  (`ingest/dedup.ts`) — a candidate task matching an already-open task from a DIFFERENT
+  source (shared PR/issue id + word overlap, or high word overlap alone) is recorded as
+  a `DEDUPED` funnel outcome instead of a second task. Guards BOTH creation paths: the
+  extraction funnel (`funnel.ts` persistExtraction) and the structured jira/github path
+  (`structured.ts` handleTaskSource new-task branch — the slack-first/github-second live
+  repro order). Same-source repeats are still the ref-suffix mechanism's job. Known v1
+  trade-off: when a structured event dedups, that github/jira ref gets no task row, so
+  upstream auto-close won't attach to the surviving task. Landed alongside the
+  task-ownership fix below (both from the 2026-07-09 live-testing sweep).
 - WS reconnect has no event replay (client refetches REST state instead — fine, but note it).
 - Product look: a once-surfaced task that becomes due within 24–48h cannot resurface through
   the 48h tier-1 cooldown (spec-conformant per specs/loop.md gates 1/2, but arguably a due
   task should pierce the cooldown once).
+
+## Deferred from the 2026-07-09 TUI dogfooding report
+
+Findings from the first-time-user test session that are feature/design decisions rather
+than fixes (the fixable findings were addressed in the same-day fix sweep):
+
+- **TUI write actions (M9)**: the TUI is read-only beyond chat — no check-now, no MCP
+  action approval (view-only count), no direct task actions. Chat covers most task ops;
+  decide whether the TUI should get `/check <source>` and an approve/deny prompt for
+  pending actions, or stay deliberately thin.
+- **On-demand brief (L5)**: judgment constantly defers items "to the morning brief", but
+  there's no `/brief` command or `POST /api/brief/preview` to see it now. The brief is the
+  product's centerpiece and it's unviewable on demand.
+- **Judgment consistency (L6)**: score-borderline items can flip between skip and notify
+  across nearby ticks (observed: "better in tomorrow's brief" → notify, same evening). A
+  small "recently decided" memory fed into the judgment prompt would damp oscillation.
 
 ## P3 — later / ideas
 

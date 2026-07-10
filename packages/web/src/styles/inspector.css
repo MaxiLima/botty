@@ -149,6 +149,11 @@
   background: var(--surface-3);
   text-decoration: line-through;
 }
+.oc-deduped {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.11);
+  text-decoration: line-through;
+}
 .oc-error {
   color: var(--red);
   background: rgba(248, 113, 113, 0.13);

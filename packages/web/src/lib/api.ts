@@ -120,7 +120,15 @@ export const api = {
 
   // Control
   runLoopNow: () => req<{ tickId: string }>('POST', '/api/loop/run-now', {}),
-  checkSourceNow: (source: SourceId) => req<{ checkId: string }>('POST', `/api/sources/${source}/check-now`, {}),
+  // M6: fire-and-forget — completion arrives via the source.checked WS event,
+  // not this response. alreadyRunning=true means a check for this source was
+  // already in flight and this call was a no-op.
+  checkSourceNow: (source: SourceId) =>
+    req<{ started: boolean; source: SourceId; alreadyRunning?: boolean }>(
+      'POST',
+      `/api/sources/${source}/check-now`,
+      {},
+    ),
   settings: () => req<{ settings: Record<string, unknown> }>('GET', '/api/settings'),
   patchSettings: (patch: Record<string, unknown>) =>
     req<{ settings: Record<string, unknown> }>('PUT', '/api/settings', { patch }),

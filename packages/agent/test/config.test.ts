@@ -112,9 +112,9 @@ describe('parseHeartbeat', () => {
 });
 
 describe('config manager (template seeding + materialize + save)', () => {
-  function makeEnv() {
+  function makeEnv(mode?: 'sim' | 'real') {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'botty-test-'));
-    return loadEnv({ dataDir, dbPath: path.join(dataDir, 'data', 'botty.db') });
+    return loadEnv({ dataDir, dbPath: path.join(dataDir, 'data', 'botty.db'), mode });
   }
 
   it('seeds templates and materializes sim-scenario people with correct tiers', () => {
@@ -179,6 +179,47 @@ describe('config manager (template seeding + materialize + save)', () => {
     // previous version snapshotted
     const archived = fs.readdirSync(env.configArchiveDir).filter((f) => f.startsWith('team-'));
     expect(archived.length).toBe(1);
+    fs.rmSync(env.dataDir, { recursive: true, force: true });
+  });
+
+  // H3: a fresh real install must never inherit the fictional Acme/Marian/Sofi/Diego
+  // team.md (or Maxo's persona.md) as if they were the actual user's data — those
+  // fixtures exist only for the sim scenario.
+  it('real mode seeds team.md/persona.md with zero Tier-1 people and a neutral persona', () => {
+    const env = makeEnv('real');
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const config = createConfig(env, db, bus);
+    config.materializePeople();
+
+    expect(db.listPeople().filter((p) => p.tier === 1)).toHaveLength(0);
+    expect(db.getPersonByName('Marian')).toBeUndefined();
+    expect(db.getPersonByName('Sofi')).toBeUndefined();
+    expect(db.getPersonByName('Diego')).toBeUndefined();
+    // parse.ts must tolerate a People section with zero live bullets (no throw,
+    // no crash on hot-reload) — the fictional names may appear only inside an
+    // HTML comment / prose example, never as a parseable bullet.
+    expect(config.team().people).toHaveLength(0);
+
+    expect(config.persona()).not.toContain('Maxo');
+    expect(config.persona()).not.toContain('Buenos Aires');
+    expect(config.persona().toLowerCase()).toContain('fill this in');
+    fs.rmSync(env.dataDir, { recursive: true, force: true });
+  });
+
+  it('sim mode (default) keeps seeding the Acme fixtures the sim scenario depends on', () => {
+    const env = makeEnv('sim');
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const config = createConfig(env, db, bus);
+    config.materializePeople();
+
+    expect(db.listPeople().filter((p) => p.tier === 1).map((p) => p.name).sort()).toEqual([
+      'Diego',
+      'Marian',
+      'Sofi',
+    ]);
+    expect(config.persona()).toContain('Maxo');
     fs.rmSync(env.dataDir, { recursive: true, force: true });
   });
 });

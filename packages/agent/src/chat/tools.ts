@@ -115,11 +115,25 @@ export function createChatTools(deps: ChatToolDeps): ChatToolSpec[] {
   const taskAction = defineTool({
     name: 'task_action',
     description:
-      'Act on an existing task by id: mark done, snooze, dismiss, reopen, or change priority. Find task ids in the open-task list or via memory_search.',
+      'Act on an existing task by id: mark done, snooze, dismiss, reopen, or change priority. Find task ids in the open-task list or via memory_search. ' +
+      'For snooze: if the user names a specific moment ("until tomorrow 9am", "Monday morning"), compute that wall-clock instant from the current local time given above and pass it as snoozeUntil — do NOT approximate it with snoozeDays (whole-day snooze lands at the current time-of-day, not the requested one).',
     schema: z.object({
       taskId: z.string().min(1),
       action: z.enum(['done', 'snooze', 'dismiss', 'reopen', 'priority']),
-      snoozeDays: z.number().int().min(1).max(365).optional().describe('For snooze; default 1'),
+      snoozeDays: z
+        .number()
+        .int()
+        .min(1)
+        .max(365)
+        .optional()
+        .describe('For snooze: whole days from now (default 1). Ignored when snoozeUntil is set.'),
+      snoozeUntil: z
+        .string()
+        .datetime({ offset: true, message: 'must be an ISO 8601 datetime with offset/zone, e.g. 2026-07-10T09:00:00-03:00' })
+        .optional()
+        .describe(
+          'For snooze: exact wall-clock instant to snooze until, ISO 8601 with offset (e.g. "2026-07-10T09:00:00-03:00" for tomorrow 9am local). Takes precedence over snoozeDays; must be in the future.',
+        ),
       priority: z.number().int().min(1).max(3).optional().describe('For the priority action; 1=HIGH..3=LOW'),
     }),
     summarize: (input) => `${input.action}: ${input.taskId}`,
@@ -134,8 +148,16 @@ export function createChatTools(deps: ChatToolDeps): ChatToolSpec[] {
           updated = db.updateTask(input.taskId, { status: 'done', doneAt: nowIso() }, 'chat');
           break;
         case 'snooze': {
-          const days = input.snoozeDays ?? 1;
-          const until = new Date(Date.now() + days * DAY_MS).toISOString();
+          let until: string;
+          if (input.snoozeUntil) {
+            const ts = Date.parse(input.snoozeUntil);
+            if (Number.isNaN(ts)) return { error: `invalid snoozeUntil: ${input.snoozeUntil}` };
+            if (ts <= Date.now()) return { error: `snoozeUntil must be in the future: ${input.snoozeUntil}` };
+            until = new Date(ts).toISOString();
+          } else {
+            const days = input.snoozeDays ?? 1;
+            until = new Date(Date.now() + days * DAY_MS).toISOString();
+          }
           updated = db.updateTask(input.taskId, { status: 'snoozed', snoozeUntil: until }, 'chat');
           break;
         }

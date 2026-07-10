@@ -75,3 +75,88 @@ describe('applyTimewarp — preserves each timestamp value\'s original shape', (
     expect(total).toBeGreaterThan(0); // at least created_at/updated_at shifted
   });
 });
+
+// L7: the SHIFTS table map predates migrations 004 (commitments) and 005
+// (pending_actions) — without these, timewarping the DB never ages the
+// short-lived commitment due dates or the 24h pending-action expiry, so
+// time-gated tests of those features (loop/commitments.ts, mcp/pending.ts)
+// couldn't actually exercise their aging behavior via timewarp.
+describe('applyTimewarp — migrations 004/005 tables', () => {
+  it('shifts commitments.due_at/created_at/delivered_at', () => {
+    const db = new Db(':memory:');
+    db.raw
+      .prepare(
+        `INSERT INTO commitments (id, description, due_at, source_turn_id, created_at, status, delivered_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'c1',
+        'interview follow-up',
+        '2026-07-10T09:00:00.000Z',
+        null,
+        '2026-07-09T09:00:00.000Z',
+        'delivered',
+        '2026-07-09T10:00:00.000Z',
+      );
+
+    applyTimewarp(db.raw, 6);
+
+    const row = db.raw.prepare('SELECT due_at, created_at, delivered_at FROM commitments WHERE id=?').get('c1') as {
+      due_at: string;
+      created_at: string;
+      delivered_at: string;
+    };
+    expect(row.due_at).toBe('2026-07-10T03:00:00.000Z');
+    expect(row.created_at).toBe('2026-07-09T03:00:00.000Z');
+    expect(row.delivered_at).toBe('2026-07-09T04:00:00.000Z');
+  });
+
+  it('shifts pending_actions.created_at/resolved_at', () => {
+    const db = new Db(':memory:');
+    db.raw
+      .prepare(
+        `INSERT INTO pending_actions (id, server, tool, args_json, summary, status, created_at, resolved_at, result_json, source_turn_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'pa1',
+        'gmail',
+        'send_email',
+        '{}',
+        'send an email',
+        'approved',
+        '2026-07-09T09:00:00.000Z',
+        '2026-07-09T09:05:00.000Z',
+        null,
+        null,
+      );
+
+    applyTimewarp(db.raw, 6);
+
+    const row = db.raw.prepare('SELECT created_at, resolved_at FROM pending_actions WHERE id=?').get('pa1') as {
+      created_at: string;
+      resolved_at: string;
+    };
+    expect(row.created_at).toBe('2026-07-09T03:00:00.000Z');
+    expect(row.resolved_at).toBe('2026-07-09T03:05:00.000Z');
+  });
+
+  it('a still-pending action (resolved_at NULL) is left alone on that column, created_at still shifts', () => {
+    const db = new Db(':memory:');
+    db.raw
+      .prepare(
+        `INSERT INTO pending_actions (id, server, tool, args_json, summary, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run('pa2', 'gmail', 'send_email', '{}', 'send an email', 'pending', '2026-07-09T09:00:00.000Z');
+
+    applyTimewarp(db.raw, 6);
+
+    const row = db.raw.prepare('SELECT created_at, resolved_at FROM pending_actions WHERE id=?').get('pa2') as {
+      created_at: string;
+      resolved_at: string | null;
+    };
+    expect(row.created_at).toBe('2026-07-09T03:00:00.000Z');
+    expect(row.resolved_at).toBeNull();
+  });
+});

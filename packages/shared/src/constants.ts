@@ -137,5 +137,6 @@ export type FunnelOutcome =
   | 'NO_SIGNAL'
   | 'CLASSIFIED_OUT'
   | 'EXTRACTED'
+  | 'DEDUPED' // extraction matched an existing open task cross-source; no new task created
   | 'UPSERTED' // structured sources (jira/github/gcal) that skip the funnel
   | 'ERROR';

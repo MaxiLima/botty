@@ -28,10 +28,19 @@ export const JUDGMENT_SYSTEM = [
   '',
   'Rules:',
   '- Strong bias to skip. When in doubt, skip.',
-  '- At most ONE notify action per tick, unless a task is due within 24 hours.',
+  '- At most ONE notify action per tick as a default; tasks due within 24 hours may justify',
+  '  more. But the number of notifies you can send this tick is a hard external budget set',
+  "  outside this prompt — it is NOT something this exception lets you bypass. If you return",
+  '  more notify actions than that budget, only the highest-scored ones will actually be sent',
+  '  and the rest are silently dropped. So rank rather than pile on: when several tasks are due',
+  '  soon, score them honestly and let the lower-value ones wait for a later tick.',
   '- Respect response history: if recent surfaces of a task were dismissed or expired',
   '  unanswered, do not notify it again — skip or snooze it instead.',
   '- score is 0-10 (10 = must surface immediately). Be honest; low-value nudges score low.',
+  "- A candidate marked `waiting on <name>` is THEIR promise to the user, not the user's to-do:",
+  '  phrase any notify message as a follow-up/nudge to check with that person (e.g. "Diego',
+  '  promised the latency doc yesterday — ping him?"), never as an instruction telling the user',
+  '  to do the underlying work themselves.',
   '- notify actions include a short, concrete `message` written for a macOS notification.',
   '- snooze actions set `snoozeDays` (1-14). update_priority actions set `priority` (1-3,',
   '  where 1 = high and 3 = low).',
@@ -85,7 +94,8 @@ export interface DroppedAction {
     | 'notify_cap'
     | 'unknown_task'
     | 'checklist_action'
-    | 'commitment_action';
+    | 'commitment_action'
+    | 'hourly_budget';
 }
 
 export interface ValidatedJudgment {
@@ -163,4 +173,50 @@ export function validateJudgment(
     actions.push(action);
   }
   return { actions, dropped };
+}
+
+/**
+ * Tick step 9.5 — enforce the rolling `max_proactive_per_hour` budget against
+ * THIS tick's own output. validateJudgment's one-notify-per-tick cap exempts
+ * tasks due within 24h (see JUDGMENT_SYSTEM), so a single judgment call can
+ * legitimately return several notify actions at once; nothing previously
+ * capped that burst against the hourly budget rules-filter (gate 8) otherwise
+ * enforces — that gate only ever counts surfaces ALREADY in proactive_log
+ * before judgment runs. This caps notify actions to whatever remains of the
+ * budget for the current rolling hour, keeping the highest-score notifies and
+ * dropping the rest (reason 'hourly_budget').
+ *
+ * `exemptTaskIds` (checklist- and commitment-prefixed candidate ids) are surfaced under
+ * surface kinds ('checklist'/'commitment') that rules-filter's NUDGE_KINDS does
+ * NOT count toward nudgesLastHour — so they must stay outside this budget too,
+ * or the two layers would disagree about which kinds the budget covers.
+ */
+export function applyHourlyBudget(
+  actions: JudgmentAction[],
+  opts: { remainingBudget: number; exemptTaskIds?: Set<string> },
+): ValidatedJudgment {
+  const budget = Math.max(0, opts.remainingBudget);
+  const exempt = opts.exemptTaskIds ?? new Set<string>();
+  const isBudgetable = (a: JudgmentAction): boolean => a.type === 'notify' && !exempt.has(a.taskId);
+
+  const budgetable = actions
+    .map((a, i) => ({ a, i }))
+    .filter((x) => isBudgetable(x.a));
+  if (budgetable.length <= budget) return { actions, dropped: [] };
+
+  // Rank by score desc; stable tie-break on original order, so the lowest-score
+  // (and, among ties, the latest) notifies are the ones dropped.
+  const ranked = [...budgetable].sort((x, y) => y.a.score - x.a.score || x.i - y.i);
+  const keepIdxs = new Set(ranked.slice(0, budget).map((x) => x.i));
+
+  const kept: JudgmentAction[] = [];
+  const dropped: DroppedAction[] = [];
+  actions.forEach((a, i) => {
+    if (!isBudgetable(a) || keepIdxs.has(i)) {
+      kept.push(a);
+    } else {
+      dropped.push({ taskId: a.taskId, type: a.type, reason: 'hourly_budget' });
+    }
+  });
+  return { actions: kept, dropped };
 }

@@ -25,6 +25,11 @@ const SHIFTS: Record<string, string[]> = {
   ai_decisions: ['created_at'],
   people: ['last_interaction_at', 'muted_until'],
   source_check_log: ['checked_at'],
+  // migrations 004/005 (added after this map was first written — L7): inferred
+  // commitments and consent-gated pending MCP actions are both time-gated
+  // (due_at delivery / 24h pending_actions expiry) and need to age with everything else.
+  commitments: ['due_at', 'created_at', 'delivered_at'],
+  pending_actions: ['created_at', 'resolved_at'],
 };
 
 /**

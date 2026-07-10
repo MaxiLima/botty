@@ -94,13 +94,20 @@ function TaskCard({ task, onClick }: { task: Task; onClick: () => void }) {
         <span className={`prio prio-${priorityLabel(task.priority).toLowerCase()}`}>
           {priorityLabel(task.priority)}
         </span>
+        {task.owner === 'them' && (
+          <span className="task-waiting" title="their commitment — not the user's to-do">
+            ⏳ waiting
+          </span>
+        )}
         <span className="task-age" title={task.createdAt}>
           {timeAgo(task.createdAt)}
         </span>
       </div>
       <div className="task-desc">{task.description}</div>
       <div className="task-card-meta">
-        {task.requesterName && <span className="task-requester">◦ {task.requesterName}</span>}
+        {task.requesterName && (
+          <span className="task-requester">◦ {task.owner === 'them' ? `waiting on ${task.requesterName}` : task.requesterName}</span>
+        )}
         {task.projectName && <span className="task-project">{task.projectName}</span>}
         {task.dueDate && (
           <span className={`task-due ${due !== null && due < 0 ? 'overdue' : due !== null && due <= 1 ? 'soon' : ''}`}>
@@ -168,7 +175,10 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
               {task.sourceRef ? ` · ${task.sourceRef}` : ''}
             </span>
             <span>requester</span>
-            <span>{task.requesterName ?? task.requestedBy ?? '–'}</span>
+            <span>
+              {task.requesterName ?? task.requestedBy ?? '–'}
+              {task.owner === 'them' && <span className="task-waiting" style={{ marginLeft: 6 }}>⏳ waiting on them</span>}
+            </span>
             <span>project</span>
             <span>{task.projectName ?? '–'}</span>
             <span>due</span>

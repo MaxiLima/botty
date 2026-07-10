@@ -22,6 +22,7 @@ import { badRequest, conflict, notFound, param, parseBody, queryInt, queryStr, w
 import { buildCostsReport, pricingWithOverrides } from './costs.js';
 import { nanoid } from 'nanoid';
 import { notifyMacos } from '../loop/notify-macos.js';
+import { isActiveDay, isQuietHours, isWithinWorkingHours } from '../loop/time.js';
 
 export const AGENT_VERSION = '0.1.0';
 
@@ -73,7 +74,18 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
   router.get(
     '/health',
     wrap((_req, res) => {
-      res.json({ ok: true, version: AGENT_VERSION, mode: env.mode, dbPath: env.dbPath });
+      // M8: TUI schedule indicator — field names below are a fixed contract
+      // the TUI codes against directly, do not rename.
+      const hb = config.heartbeat();
+      const now = nowIso();
+      const schedule = {
+        withinWorkingHours: isWithinWorkingHours(now, hb),
+        quietHours: isQuietHours(now, hb.quietHours),
+        workingHours: `${hb.workingHours.start}-${hb.workingHours.end}`,
+        quietHoursRange: `${hb.quietHours.start}-${hb.quietHours.end}`,
+        activeToday: isActiveDay(now, hb.activeDays),
+      };
+      res.json({ ok: true, version: AGENT_VERSION, mode: env.mode, dbPath: env.dbPath, schedule });
     }),
   );
 
@@ -177,9 +189,17 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
           updated = db.updateTask(id, { status: 'done', doneAt: nowIso() }, 'user');
           break;
         case 'snooze': {
-          const days = body.snoozeDays ?? 1;
-          if (days <= 0) throw badRequest('snoozeDays must be positive');
-          const until = new Date(Date.now() + days * DAY_MS).toISOString();
+          let until: string;
+          if (body.snoozeUntil) {
+            const ts = Date.parse(body.snoozeUntil);
+            if (Number.isNaN(ts)) throw badRequest(`invalid snoozeUntil: ${body.snoozeUntil}`);
+            if (ts <= Date.now()) throw badRequest('snoozeUntil must be in the future');
+            until = new Date(ts).toISOString();
+          } else {
+            const days = body.snoozeDays ?? 1;
+            if (days <= 0) throw badRequest('snoozeDays must be positive');
+            until = new Date(Date.now() + days * DAY_MS).toISOString();
+          }
           updated = db.updateTask(id, { status: 'snoozed', snoozeUntil: until }, 'user');
           break;
         }
@@ -396,15 +416,40 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
     }),
   );
 
+  // In-flight guard: a source_check_log row (and its id) only exists once
+  // runCheck finishes, and a full check can run an entire LLM funnel pass
+  // (seconds to minutes) — so this route must never await it (M6: a client
+  // waiting on that response would time out). It kicks the check off,
+  // responds immediately, and completion arrives via the existing
+  // `source.checked` WS broadcast (see ingest/scheduler.ts runCheck). Two
+  // concurrent check-nows for the same source are rejected rather than
+  // interleaved (racing on the `since` setting / duplicate LLM funnel runs).
+  const checksInFlight = new Set<SourceId>();
+
   router.post(
     '/sources/:source/check-now',
-    wrap(async (req, res) => {
+    wrap((req, res) => {
       const source = param(req, 'source') as SourceId;
       if (!SOURCES.includes(source)) {
         throw badRequest(`source must be one of ${SOURCES.join(', ')}`);
       }
-      const checkId = await deps.ingest.checkNow(source);
-      res.json({ checkId });
+      if (checksInFlight.has(source)) {
+        res.json({ started: false, alreadyRunning: true, source });
+        return;
+      }
+      checksInFlight.add(source);
+      // Fire-and-forget: runCheck() never throws (errors land in
+      // source_check_log), but guard defensively so a rejection here can
+      // never become an unhandled promise rejection.
+      void deps.ingest
+        .checkNow(source)
+        .catch((err) => {
+          console.error(`[check-now] ${source} failed unexpectedly:`, err);
+        })
+        .finally(() => {
+          checksInFlight.delete(source);
+        });
+      res.json({ started: true, source });
     }),
   );
 

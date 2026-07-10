@@ -11,7 +11,7 @@ describe('Db', () => {
     const versions = db.raw.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {
       version: number;
     }[];
-    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it('people round-trip: team upsert derives tier from weight and updates in place', () => {
@@ -110,6 +110,18 @@ describe('Db', () => {
     expect(history.find((h) => h.field === 'doneAt' && h.oldValue === null)?.newValue).toBe(
       '2026-07-04T12:00:00Z',
     );
+  });
+
+  it('tasks: owner column defaults to "me" and accepts an explicit "them"', () => {
+    const mine = db.insertTask({ description: 'Ship the report', source: 'chat' })!;
+    expect(mine.owner).toBe('me');
+
+    const theirs = db.insertTask({ description: 'Send latency doc', source: 'slack', sourceRef: 'T-1', owner: 'them' })!;
+    expect(theirs.owner).toBe('them');
+
+    // round-trips through listTasks/getTask too, not just the insert return value
+    expect(db.getTask(theirs.id)!.owner).toBe('them');
+    expect(db.listTasks().find((t) => t.id === mine.id)!.owner).toBe('me');
   });
 
   it('loop task queries: openTasks, dueSoon, neverSurfaced, stale', () => {

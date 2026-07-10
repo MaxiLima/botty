@@ -135,6 +135,33 @@ describe('task_action', () => {
     expect(Math.abs(oneDay - (Date.now() + 86_400_000))).toBeLessThan(5_000);
   });
 
+  it('snoozeUntil sets the exact wall-clock instant and takes precedence over snoozeDays', async () => {
+    const { db, tool, taskId } = await withTask();
+    const target = new Date(Date.now() + 36 * 3_600_000); // ~1.5 days out, an "off" day boundary
+    const res = await tool('task_action').execute({
+      taskId,
+      action: 'snooze',
+      snoozeUntil: target.toISOString(),
+      snoozeDays: 3, // must be ignored — snoozeUntil wins
+    });
+    expect(res.status).toBe('snoozed');
+    expect(Date.parse(db.getTask(taskId)!.snoozeUntil!)).toBe(target.getTime());
+  });
+
+  it('snoozeUntil in the past is rejected without mutating the task', async () => {
+    const { db, tool, taskId } = await withTask();
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const res = await tool('task_action').execute({ taskId, action: 'snooze', snoozeUntil: past });
+    expect(String(res.error)).toContain('future');
+    expect(db.getTask(taskId)!.status).toBe('open');
+  });
+
+  it('snoozeUntil without an offset/zone is a schema validation error (never silently accepted)', async () => {
+    const { tool, taskId } = await withTask();
+    const res = await tool('task_action').execute({ taskId, action: 'snooze', snoozeUntil: '2026-07-10T09:00' });
+    expect(String(res.error)).toContain('invalid input');
+  });
+
   it('dismiss cancels; reopen clears snooze/done back to open', async () => {
     const { db, tool, taskId } = await withTask();
     await tool('task_action').execute({ taskId, action: 'dismiss' });

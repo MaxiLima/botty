@@ -1,6 +1,7 @@
 import { HEARTBEAT_DEFAULTS } from '@botty/shared';
 import type { CalendarEvent, FunnelOutcome, Person, SourceEvent } from '@botty/shared';
 import { nowIso, type Db } from '../db/index.js';
+import { findNearDuplicateTask } from './dedup.js';
 import {
   broadcastTasksUpdated,
   clip,
@@ -126,6 +127,32 @@ export function handleTaskSource(ctx: FunnelCtx, event: SourceEvent): FunnelOutc
     }
   } else if (!closed) {
     const description = clip(event.text.split('\n')[0]?.trim() || ref, 200);
+
+    // Cross-source near-duplicate check (mirrors the extraction path in
+    // funnel.ts — see ingest/dedup.ts): the same real-world ask can arrive
+    // slack-first ("can you review PR #482") and THEN as the structured
+    // GitHub/Jira event for the same ref; without this the structured path
+    // blindly inserts a second open task. Only the NEW-task branch is gated —
+    // status sync on an existing (source, ref) task above is untouched.
+    // Known trade-off, accepted for v1: skipping the insert means this
+    // github/jira ref never gets its own task row, so upstream status sync
+    // (auto-close on merged/done, the `existing` branch above) won't attach
+    // to the surviving cross-source task — it stays open until the resolution
+    // sweep or the user closes it. Conservative: a lingering open task beats
+    // a duplicate.
+    const dupe = findNearDuplicateTask(ctx.db, {
+      description,
+      rawText: event.text,
+      source: event.source,
+    });
+    if (dupe) {
+      stampOutcome(ctx.db, rawLog, event, 'DEDUPED', {
+        ref,
+        dedupedTasks: [{ description, existingTaskId: dupe.id }],
+      });
+      return 'DEDUPED';
+    }
+
     const task = ctx.db.insertTask(
       {
         description,

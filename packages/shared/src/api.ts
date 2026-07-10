@@ -30,6 +30,10 @@ export const TaskActionRequestSchema = z.object({
   // (loop/actions.ts:95) but still needs a sane ceiling — a year covers any
   // legitimate "come back to this later" use.
   snoozeDays: z.number().int().min(1).max(365).optional(),
+  // Exact wall-clock instant to snooze until (e.g. "tomorrow 9am"); takes
+  // precedence over snoozeDays when both are present. Must include an
+  // offset/zone (offset: true) since callers compute this from local time.
+  snoozeUntil: z.string().datetime({ offset: true }).optional(),
   reason: z.string().optional(),
   // 1=HIGH .. 3=LOW everywhere (DB, API, UI) — see docs/specs/data-model.md.
   priority: z.number().int().min(1).max(3).optional(),

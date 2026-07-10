@@ -53,13 +53,29 @@ export type FunnelRow = RawLogRow & { outcome?: FunnelOutcome };
 
 export type Api = ReturnType<typeof createApi>;
 
+/** Optional — only present once the agent's health route reports it (older agents omit it). */
+export interface ScheduleInfo {
+  withinWorkingHours: boolean;
+  quietHours: boolean;
+  workingHours: string;
+  quietHoursRange: string;
+  activeToday: boolean;
+}
+
 export function createApi(baseUrl: string) {
   async function req<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, {
-      method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      // Network-level failure (agent down, refused connection, DNS, …) — the raw
+      // fetch error (usually just "fetch failed") isn't useful to a human.
+      throw new ApiError(0, `can't reach the agent at ${baseUrl.replace(/^https?:\/\//, '')} — is it running?`);
+    }
     const text = await res.text();
     let json: unknown = null;
     try {
@@ -75,7 +91,11 @@ export function createApi(baseUrl: string) {
   }
 
   return {
-    health: () => req<{ ok: boolean; version: string; mode: string; dbPath: string }>('GET', '/api/health'),
+    health: () =>
+      req<{ ok: boolean; version: string; mode: string; dbPath: string; schedule?: ScheduleInfo }>(
+        'GET',
+        '/api/health',
+      ),
 
     // Chat
     chatHistory: (limit?: number, before?: string) =>
@@ -122,7 +142,8 @@ export function createApi(baseUrl: string) {
 
     // Control
     runLoopNow: () => req<{ tickId: string }>('POST', '/api/loop/run-now', {}),
-    checkSourceNow: (source: SourceId) => req<{ checkId: string }>('POST', `/api/sources/${source}/check-now`, {}),
+    checkSourceNow: (source: SourceId) =>
+      req<{ started: boolean; alreadyRunning?: boolean; source: SourceId }>('POST', `/api/sources/${source}/check-now`, {}),
     settings: () => req<{ settings: Record<string, unknown> }>('GET', '/api/settings'),
     patchSettings: (patch: Record<string, unknown>) =>
       req<{ settings: Record<string, unknown> }>('PUT', '/api/settings', { patch }),

@@ -46,10 +46,19 @@ export interface RulesRejection {
 export interface RulesFilterResult {
   survivors: ProactiveCandidate[];
   rejections: RulesRejection[];
+  /**
+   * Nudge-kind (NUDGE_KINDS) surfaces already logged within the trailing hour.
+   * Exposed so callers can enforce the SAME rolling hourly budget against
+   * actions a single judgment call produces this tick — gate 8 below only ever
+   * rejects candidates against surfaces already in the log before judgment
+   * runs, it does not cap how many new notifies this tick's judgment output
+   * may contain (see loop/tick.ts step 9.5 / loop/judgment.ts applyHourlyBudget).
+   */
+  nudgesLastHour: number;
 }
 
 /** Surface kinds that count as "nudges" for min-gap / hourly-cap (briefings don't). */
-const NUDGE_KINDS = new Set(['nudge', 'meeting_prep']);
+export const NUDGE_KINDS = new Set(['nudge', 'meeting_prep']);
 
 const HOUR_MS = 3_600_000;
 
@@ -88,7 +97,7 @@ export function applyRulesFilter(
     if (gate) rejections.push({ taskId: task.id, gate });
     else survivors.push(task);
   }
-  return { survivors, rejections };
+  return { survivors, rejections, nudgesLastHour };
 
   function firstFailingGate(task: ProactiveCandidate): GateName | null {
     // 1. per-task cooldown escalation {1→48h, 2→96h, 3+→7d}

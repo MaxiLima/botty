@@ -14,6 +14,19 @@ export function newPending(turnId: string, thinking = false): PendingTurn {
 }
 
 /**
+ * A paste containing embedded newlines lands in the single-line composer's
+ * `onChange` value verbatim (ink-text-input inserts whatever `input` string
+ * it's handed) — a raw `\n` there breaks the bordered composer Box (only the
+ * last line stays visible) and, once submitted, the persisted turn's content
+ * garbles the transcript echo the same way. Normalize at input time so the
+ * composer and every downstream render (including the eventual transcript
+ * echo, since it's the exact string we send) only ever see single-line text.
+ */
+export function normalizePastedInput(s: string): string {
+  return s.replace(/\r\n|\r|\n/g, '⏎ ');
+}
+
+/**
  * The server streams events for replies other clients triggered too; adopt a
  * stream for an unknown turnId instead of ignoring it (the TUI is a window
  * onto the same session as the browser). The adopt rule lives only here.

@@ -20,7 +20,12 @@ import {
   eligibleCommitments,
   executeCommitmentNotifies,
 } from './commitments.js';
-import { runJudgment, validateJudgment, type JudgmentRunResult } from './judgment.js';
+import {
+  applyHourlyBudget,
+  runJudgment,
+  validateJudgment,
+  type JudgmentRunResult,
+} from './judgment.js';
 import type { MacNotifier } from './notify-macos.js';
 import { applyRulesFilter } from './rules-filter.js';
 import type { ResponseTracker } from './response-tracker.js';
@@ -121,10 +126,16 @@ export async function runTick(
     );
     const mutedUntil: Record<string, string | null> = {};
     for (const p of db.listPeople()) mutedUntil[p.id] = p.mutedUntil;
-    const { survivors, rejections } = applyRulesFilter(candidates, hb, now, recentSurfaces, {
-      lastUserChatAt: tracker.lastUserMessageAt(),
-      mutedUntil,
-    });
+    const { survivors, rejections, nudgesLastHour } = applyRulesFilter(
+      candidates,
+      hb,
+      now,
+      recentSurfaces,
+      {
+        lastUserChatAt: tracker.lastUserMessageAt(),
+        mutedUntil,
+      },
+    );
 
     // 6. zero-cost floor: no survivors AND no due checklist items AND no due
     // commitments ⇒ done, without an LLM call. A due checklist item or a due
@@ -187,7 +198,7 @@ export async function runTick(
     );
     const checklistIds = new Set(dueChecklist.map((t) => checklistCandidateId(t)));
     const commitmentIds = new Set(dueCommitments.map((c) => commitmentCandidateId(c)));
-    const { actions, dropped } = validateJudgment(output, {
+    const { actions: validated, dropped: validationDropped } = validateJudgment(output, {
       surfacingThreshold: hb.surfacingThreshold,
       validTaskIds,
       dueSoonTaskIds,
@@ -195,6 +206,22 @@ export async function runTick(
       checklistIds,
       commitmentIds,
     });
+
+    // 9.5 hourly nudge budget — validateJudgment's one-notify-per-tick cap
+    // exempts due-within-24h tasks, so a single judgment call can legitimately
+    // return several notify actions at once; nothing capped that burst against
+    // rules-filter's rolling max_proactive_per_hour budget (gate 8 only counts
+    // surfaces already logged BEFORE this tick's judgment ran). Cap task-path
+    // notifies here to whatever remains of the hour's budget, keeping the
+    // highest-score notifies. Checklist/commitment notifies use surface kinds
+    // rules-filter's NUDGE_KINDS does not count (see rules-filter.ts), so they
+    // stay exempt from this budget too, matching gate 8's own accounting.
+    const remainingHourlyBudget = Math.max(0, hb.maxProactivePerHour - nudgesLastHour);
+    const { actions, dropped: budgetDropped } = applyHourlyBudget(validated, {
+      remainingBudget: remainingHourlyBudget,
+      exemptTaskIds: new Set([...checklistIds, ...commitmentIds]),
+    });
+    const dropped = [...validationDropped, ...budgetDropped];
 
     // 10. execute — task actions, checklist notifies, and commitment notifies
     // take separate paths (neither checklist items nor commitments are tasks;

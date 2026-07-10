@@ -60,7 +60,13 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
 
   function taskOneLiner(t: Task): string {
     const bits = [`[P${t.priority}] ${flat(t.description)}`];
-    if (t.requesterName) bits.push(`from ${flat(t.requesterName)}`);
+    // owner='them': this is the OTHER person's own promise, not the user's to-do — say so
+    // explicitly so chat answers "waiting on Diego to send X", never "you must send X".
+    if (t.owner === 'them') {
+      bits.push(`waiting on ${t.requesterName ? flat(t.requesterName) : 'them'}`);
+    } else if (t.requesterName) {
+      bits.push(`from ${flat(t.requesterName)}`);
+    }
     if (t.dueDate) bits.push(`due ${t.dueDate.slice(0, 10)}`);
     // Id appended outside the clip — task_action needs it verbatim.
     return `- ${clip(bits.join(' · '), 160)} (id: ${t.id})`;
@@ -79,6 +85,18 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
 
       const persona = config.persona().trim();
       if (persona) sections.push(clip(persona, PERSONA_CAP));
+
+      // Code-side scaffold constraints (2026-07-09 bugfix — see PR notes): reinforced
+      // here rather than in persona.md because these are hard rules, not personality,
+      // and persona.md is user-editable config another agent owns.
+      sections.push(
+        [
+          '## Constraints',
+          "- Reply in the language of the user's LAST message, even if persona/memory snippets above are in a different language.",
+          '- Never offer or claim to perform work you have no tool for (e.g. code changes, deploys, rollbacks, sending messages on your own) — you can only track tasks, set reminders, draft text here in chat, and act on tasks/commitments via your tools.',
+          '- Never show internal task/commitment ids (e.g. "id: abc123") to the user — use ids internally for tool calls only; disambiguate by description, requester, or source instead.',
+        ].join('\n'),
+      );
 
       const people = db.listPeople();
       if (people.length > 0) {
@@ -183,6 +201,11 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
           `status: ${t.status} · priority: P${t.priority} · age: ${ageDays(t.createdAt, now)}d`,
           `timesSurfaced: ${t.surfaceCount}${t.lastSurfacedAt ? ` · lastSurfaced: ${t.lastSurfacedAt}` : ''}`,
         ];
+        // owner='them': this candidate is the OTHER person's own stated commitment, not the
+        // user's to-do — judgment must phrase any nudge as a follow-up (see JUDGMENT_SYSTEM).
+        if (t.owner === 'them') {
+          lines.push(`waiting on ${requester ? flat(requester.name) : 'them'} (their commitment, not the user's task)`);
+        }
         if (t.dueDate) lines.push(`due: ${t.dueDate}`);
         if (t.reminderReason) lines.push(`reminderReason: ${t.reminderReason}`);
         if (surfaces.length > 0) {

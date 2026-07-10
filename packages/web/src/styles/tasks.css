@@ -103,6 +103,15 @@
   color: var(--cyan);
   background: rgba(103, 232, 249, 0.1);
 }
+.task-waiting {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.1);
+  border-radius: 3px;
+  padding: 0 5px;
+}
 .task-age {
   margin-left: auto;
   font-family: var(--mono);

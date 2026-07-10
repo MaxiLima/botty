@@ -39,6 +39,7 @@ const OUTCOME_CLASS: Record<FunnelOutcome, string> = {
   CLASSIFIED_OUT: 'oc-classifiedout',
   INTERACTION_ONLY: 'oc-interaction',
   DUPLICATE: 'oc-duplicate',
+  DEDUPED: 'oc-deduped',
   ERROR: 'oc-error',
 };
 

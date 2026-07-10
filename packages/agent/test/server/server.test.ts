@@ -28,7 +28,7 @@ interface Harness {
   teardown(): Promise<void>;
 }
 
-async function setup(): Promise<Harness> {
+async function setup(opts: { checkNow?: (source: SourceId) => Promise<string> } = {}): Promise<Harness> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'botty-server-test-'));
   const env: AgentEnv = {
     dataDir,
@@ -72,9 +72,11 @@ async function setup(): Promise<Harness> {
   const ingest: Ingest = {
     start() {},
     stop() {},
-    async checkNow(source: SourceId) {
-      return db.insertSourceCheck({ source }).id;
-    },
+    checkNow:
+      opts.checkNow ??
+      (async (source: SourceId) => {
+        return db.insertSourceCheck({ source }).id;
+      }),
   };
   const loop: Loop = {
     start() {},
@@ -123,17 +125,122 @@ function seedTask(h: Harness, description = 'ship the report'): Task {
 }
 
 describe('server: health', () => {
-  it('GET /api/health returns ok, version, mode, dbPath', async () => {
+  it('GET /api/health returns ok, version, mode, dbPath, schedule', async () => {
     const h = await setup();
     try {
       const res = await fetch(`${h.base}/api/health`);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({
+      const body = (await res.json()) as {
+        ok: boolean;
+        version: string;
+        mode: string;
+        dbPath: string;
+        schedule: {
+          withinWorkingHours: boolean;
+          quietHours: boolean;
+          workingHours: string;
+          quietHoursRange: string;
+          activeToday: boolean;
+        };
+      };
+      expect(body).toMatchObject({
         ok: true,
         version: AGENT_VERSION,
         mode: 'sim',
         dbPath: ':memory:',
       });
+      // heartbeat.md in this harness is just '# HEARTBEAT\n' → HEARTBEAT_DEFAULTS.
+      expect(body.schedule).toEqual({
+        withinWorkingHours: expect.any(Boolean),
+        quietHours: expect.any(Boolean),
+        workingHours: expect.any(String),
+        quietHoursRange: expect.any(String),
+        activeToday: expect.any(Boolean),
+      });
+      expect(body.schedule.workingHours).toMatch(/^\d{2}:\d{2}-\d{2}:\d{2}$/);
+      expect(body.schedule.quietHoursRange).toMatch(/^\d{2}:\d{2}-\d{2}:\d{2}$/);
+    } finally {
+      await h.teardown();
+    }
+  });
+});
+
+describe('server: check-now is async (M6)', () => {
+  it('responds immediately without waiting for the funnel run to finish', async () => {
+    let resolveCheck!: (id: string) => void;
+    const gate = new Promise<string>((resolve) => {
+      resolveCheck = resolve;
+    });
+    let started = false;
+    const h = await setup({
+      checkNow: async (source) => {
+        started = true;
+        return gate; // never resolves until the test says so
+      },
+    });
+    try {
+      const res = await fetch(`${h.base}/api/sources/slack/check-now`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ started: true, source: 'slack' });
+      expect(started).toBe(true); // it was actually kicked off
+      resolveCheck('unused'); // release the gate so teardown doesn't hang anything
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('a second check-now for the same source while one is in flight is rejected, not queued', async () => {
+    let resolveCheck!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      resolveCheck = resolve;
+    });
+    let calls = 0;
+    let completed = 0;
+    const h = await setup({
+      checkNow: async () => {
+        calls += 1;
+        await gate;
+        completed += 1;
+        return `check-${calls}`;
+      },
+    });
+    try {
+      const first = await fetch(`${h.base}/api/sources/slack/check-now`, { method: 'POST' });
+      expect(await first.json()).toEqual({ started: true, source: 'slack' });
+
+      const second = await fetch(`${h.base}/api/sources/slack/check-now`, { method: 'POST' });
+      expect(await second.json()).toEqual({ started: false, alreadyRunning: true, source: 'slack' });
+      expect(calls).toBe(1); // second call never reached deps.ingest.checkNow
+
+      resolveCheck();
+      await waitFor(() => completed === 1); // let the in-flight guard clear
+
+      // once the first run finishes, a fresh check-now is accepted again
+      const third = await fetch(`${h.base}/api/sources/slack/check-now`, { method: 'POST' });
+      expect(await third.json()).toEqual({ started: true, source: 'slack' });
+      expect(calls).toBe(2);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it("a different source is never blocked by another source's in-flight check", async () => {
+    const gates = new Map<string, () => void>();
+    const h = await setup({
+      checkNow: async (source) => {
+        await new Promise<void>((resolve) => gates.set(source, resolve));
+        return `check-${source}`;
+      },
+    });
+    try {
+      const slack = await fetch(`${h.base}/api/sources/slack/check-now`, { method: 'POST' });
+      expect(await slack.json()).toEqual({ started: true, source: 'slack' });
+
+      const gmail = await fetch(`${h.base}/api/sources/gmail/check-now`, { method: 'POST' });
+      expect(await gmail.json()).toEqual({ started: true, source: 'gmail' });
+
+      gates.get('slack')!();
+      gates.get('gmail')!();
     } finally {
       await h.teardown();
     }
@@ -539,10 +646,14 @@ describe('server: control & inspector plumbing', () => {
       const ticks = (await (await fetch(`${h.base}/api/ticks`)).json()) as { ticks: unknown[] };
       expect(ticks.ticks).toHaveLength(1);
 
+      // M6: check-now responds immediately with {started, source} — it never
+      // awaits the (potentially minutes-long) funnel run; completion arrives
+      // via the source.checked WS broadcast instead. See the dedicated
+      // "check-now is async" describe block below for the timing assertion.
       const check = (await (
         await fetch(`${h.base}/api/sources/slack/check-now`, { method: 'POST' })
-      ).json()) as { checkId: string };
-      expect(typeof check.checkId).toBe('string');
+      ).json()) as { started: boolean; source: SourceId };
+      expect(check).toEqual({ started: true, source: 'slack' });
       const badSource = await fetch(`${h.base}/api/sources/myspace/check-now`, { method: 'POST' });
       expect(badSource.status).toBe(400);
 

@@ -52,6 +52,24 @@ function extractLine(prompt: string, label: string): string | undefined {
   return m?.[1]?.trim();
 }
 
+/** Heuristic names from ingest/heuristics.ts tagged `kind: 'commitment'` (funnel.ts's eventPrompt
+ * carries them on a `SIGNALS:` line). Deterministic mock stand-in for real owner classification:
+ * a message whose ONLY signals are the sender's own commitment phrasing ("I'll", "I will", "on my
+ * list", "I own") is the sender's promise TO the user (owner 'them'), not a task for the user. */
+const MOCK_THEM_SIGNAL_NAMES = new Set(['ill', 'i_will', 'on_my_list', 'i_own']);
+
+function mockTaskOwner(prompt: string): 'me' | 'them' {
+  const signalsLine = extractLine(prompt, 'SIGNALS');
+  if (!signalsLine) return 'me';
+  const names = signalsLine.split(',').map((s) => s.trim());
+  const hasThem = names.some((n) => MOCK_THEM_SIGNAL_NAMES.has(n));
+  const hasMe = names.some((n) => !MOCK_THEM_SIGNAL_NAMES.has(n));
+  // A message with BOTH a task-ask signal and a commitment signal (Diego's "I'll send you the
+  // doc — can you review X?") is ambiguous for this single-task mock; default to 'me' since
+  // that's the safer (non-inverting) side when only one task slot is available.
+  return hasThem && !hasMe ? 'them' : 'me';
+}
+
 /** `!tool <name> <json-args>` — the mock chat's deterministic tool trigger. */
 export const TOOL_TRIGGER_RE = /^!tool\s+([\w-]+)(?:\s+([\s\S]+))?$/;
 
@@ -160,6 +178,7 @@ export class MockLlmClient implements LlmClient {
                 {
                   description: text.slice(0, 120),
                   ...(actor ? { requesterName: actor } : {}),
+                  owner: mockTaskOwner(req.prompt),
                 },
               ],
               decisions: [],

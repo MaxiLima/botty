@@ -13,7 +13,7 @@ import type {
 } from '@botty/shared';
 import { COST_CATEGORIES, COST_CATEGORY_LABELS } from '@botty/shared';
 import { COMMANDS, type PanelData } from './commands.js';
-import { priorityColor, priorityLabel, shortDate, timeAgo } from './format.js';
+import { priorityColor, priorityLabel, shortDate, summarizeGates, timeAgo } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { MASCOT_LINES, TAGLINE } from './mascot.js';
 
@@ -50,7 +50,9 @@ function TasksBody({ tasks, width }: { tasks: Task[]; width: number }) {
             {priorityLabel(t.priority)}
           </Text>
           <Text dimColor> {fit(t.dueDate ? shortDate(t.dueDate) : '—', 6)} </Text>
-          <Text color="cyan">{fit(t.requesterName ?? t.requestedBy ?? '—', 10)}</Text> {fit(t.description, descW)}
+          <Text color="cyan">{fit(t.requesterName ?? t.requestedBy ?? '—', 10)}</Text>{' '}
+          {fit(t.description, t.owner === 'them' ? descW - 10 : descW)}
+          {t.owner === 'them' && <Text dimColor color="yellow"> ⇠ waiting</Text>}
         </Text>
       ))}
       <Text dimColor>{tasks.length} open — manage them in the web app or just tell botty</Text>
@@ -108,7 +110,8 @@ function PersonBody({
           {'  '}
           <Text color={priorityColor(t.priority)}>{priorityLabel(t.priority)}</Text>
           <Text dimColor> {fit(t.dueDate ? shortDate(t.dueDate) : '—', 6)} </Text>
-          {fit(t.description, width - 14)}
+          {fit(t.description, t.owner === 'them' ? width - 24 : width - 14)}
+          {t.owner === 'them' && <Text dimColor color="yellow"> ⇠ waiting</Text>}
         </Text>
       ))}
       <Text bold>recent interactions</Text>
@@ -152,17 +155,21 @@ function InspectorBody({
       ))}
       {decisions.length === 0 && <Text dimColor>  none yet</Text>}
       <Text bold>ticks</Text>
-      {ticks.map((t) => (
-        <Text key={t.id}>
-          {'  '}
-          {t.error ? <Text color="red">✗</Text> : <Text color="green">✓</Text>}{' '}
-          <Text>{fit(t.trigger, 12)}</Text>
-          <Text dimColor>
-            {' '}
-            {t.candidatesIn ?? 0} in → {t.candidatesAfterRules ?? 0} after rules · {timeAgo(t.startedAt)}
+      {ticks.map((t) => {
+        const gates = summarizeGates(t.skippedJson);
+        return (
+          <Text key={t.id}>
+            {'  '}
+            {t.error ? <Text color="red">✗</Text> : <Text color="green">✓</Text>}{' '}
+            <Text>{fit(t.trigger, 12)}</Text>
+            <Text dimColor>
+              {' '}
+              {t.candidatesIn ?? 0} in → {t.candidatesAfterRules ?? 0} after rules
+              {gates ? ` ${gates}` : ''} · {timeAgo(t.startedAt)}
+            </Text>
           </Text>
-        </Text>
-      ))}
+        );
+      })}
       {ticks.length === 0 && <Text dimColor>  none yet</Text>}
       <Text bold>source checks</Text>
       {checks.map((c) => (

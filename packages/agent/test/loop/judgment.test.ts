@@ -4,6 +4,7 @@ import { Db } from '../../src/db/index.js';
 import { MockLlmClient } from '../../src/llm/mock.js';
 import { makeModelResolver } from '../../src/llm/index.js';
 import {
+  applyHourlyBudget,
   buildJudgmentPrompt,
   runJudgment,
   validateJudgment,
@@ -80,6 +81,67 @@ describe('validateJudgment', () => {
     expect(res.dropped).toEqual([
       { taskId: 'hallucinated', type: 'notify', reason: 'unknown_task' },
     ]);
+  });
+});
+
+describe('applyHourlyBudget', () => {
+  it('budget partially consumed: 1 of 2 used ⇒ only 1 of 2 notifies passes, lowest score dropped', () => {
+    const res = applyHourlyBudget(
+      [action({ taskId: 't1', score: 9 }), action({ taskId: 't2', score: 5 })],
+      { remainingBudget: 1 },
+    );
+    expect(res.actions.map((a) => a.taskId)).toEqual(['t1']);
+    expect(res.dropped).toEqual([{ taskId: 't2', type: 'notify', reason: 'hourly_budget' }]);
+  });
+
+  it('budget free: both notifies pass untouched', () => {
+    const actions = [action({ taskId: 't1', score: 9 }), action({ taskId: 't2', score: 5 })];
+    const res = applyHourlyBudget(actions, { remainingBudget: 2 });
+    expect(res.actions).toEqual(actions);
+    expect(res.dropped).toEqual([]);
+  });
+
+  it('budget exhausted: 0 remaining ⇒ all notifies dropped', () => {
+    const res = applyHourlyBudget(
+      [action({ taskId: 't1', score: 9 }), action({ taskId: 't2', score: 5 })],
+      { remainingBudget: 0 },
+    );
+    expect(res.actions).toEqual([]);
+    expect(res.dropped).toEqual([
+      { taskId: 't1', type: 'notify', reason: 'hourly_budget' },
+      { taskId: 't2', type: 'notify', reason: 'hourly_budget' },
+    ]);
+  });
+
+  it('a negative remaining budget is clamped to zero', () => {
+    const res = applyHourlyBudget([action({ taskId: 't1', score: 9 })], { remainingBudget: -3 });
+    expect(res.actions).toEqual([]);
+    expect(res.dropped).toEqual([{ taskId: 't1', type: 'notify', reason: 'hourly_budget' }]);
+  });
+
+  it('does not count snooze/update_priority actions against the notify budget', () => {
+    const res = applyHourlyBudget(
+      [
+        action({ taskId: 't1', type: 'snooze', score: 9, snoozeDays: 2 }),
+        action({ taskId: 't2', score: 8 }),
+      ],
+      { remainingBudget: 1 },
+    );
+    expect(res.actions.map((a) => a.taskId)).toEqual(['t1', 't2']);
+    expect(res.dropped).toEqual([]);
+  });
+
+  it('exempts checklist/commitment candidate ids from the budget', () => {
+    const res = applyHourlyBudget(
+      [
+        action({ taskId: 't1', score: 9 }),
+        action({ taskId: 't2', score: 8 }),
+        action({ taskId: 'checklist:c1', score: 5 }),
+      ],
+      { remainingBudget: 1, exemptTaskIds: new Set(['checklist:c1']) },
+    );
+    expect(res.actions.map((a) => a.taskId)).toEqual(['t1', 'checklist:c1']);
+    expect(res.dropped).toEqual([{ taskId: 't2', type: 'notify', reason: 'hourly_budget' }]);
   });
 });
 

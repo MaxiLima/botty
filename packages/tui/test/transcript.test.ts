@@ -7,6 +7,7 @@ import {
   formatApprovalPendingLine,
   formatApprovalResolvedLine,
   newPending,
+  normalizePastedInput,
   takeUnseen,
 } from '../src/transcript.js';
 
@@ -71,6 +72,25 @@ describe('formatApprovalResolvedLine', () => {
     for (const [status, expected] of cases) {
       expect(formatApprovalResolvedLine(status, 'send a slack message')).toBe(expected);
     }
+  });
+});
+
+describe('normalizePastedInput', () => {
+  it('leaves single-line text untouched', () => {
+    expect(normalizePastedInput("what's on my plate today?")).toBe("what's on my plate today?");
+  });
+
+  it('replaces a pasted newline with a visible marker so the composer stays single-line', () => {
+    expect(normalizePastedInput('line one\nline two')).toBe('line one⏎ line two');
+  });
+
+  it('handles CRLF and lone CR the same way as LF', () => {
+    expect(normalizePastedInput('a\r\nb')).toBe('a⏎ b');
+    expect(normalizePastedInput('a\rb')).toBe('a⏎ b');
+  });
+
+  it('collapses a multi-line paste to one visible line', () => {
+    expect(normalizePastedInput('one\ntwo\nthree')).toBe('one⏎ two⏎ three');
   });
 });
 

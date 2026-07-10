@@ -57,16 +57,30 @@ export function loadEnv(overrides: Partial<AgentEnv> = {}): AgentEnv {
   fs.mkdirSync(env.configArchiveDir, { recursive: true });
   fs.mkdirSync(env.logsDir, { recursive: true });
 
-  seedConfigTemplates(env.configDir);
+  seedConfigTemplates(env.configDir, env.mode);
   return env;
 }
 
-/** Copy any missing config files from the shipped templates. Never overwrites. */
-export function seedConfigTemplates(configDir: string): void {
+/** team.md / persona.md have a `.real.md` counterpart with the Acme/Marian/Sofi/Diego
+ *  fixtures (and Maxo's persona) stripped out — see config-templates/*.real.md. */
+const REAL_VARIANT_FILES = new Set(['team.md', 'persona.md']);
+
+/**
+ * Copy any missing config files from the shipped templates. Never overwrites.
+ *
+ * Mode-aware (H3): `sim` keeps the fictional Acme/Marian/Sofi/Diego team.md and
+ * Maxo's persona.md — the sim scenario scripts depend on those exact fixtures.
+ * `real` seeds the same file names but from the `.real.md` template variants,
+ * which ship with zero live people (team.md) and a neutral fill-in-yourself
+ * persona, so a fresh real install never treats fictional people as Tier 1.
+ */
+export function seedConfigTemplates(configDir: string, mode: 'sim' | 'real' = 'sim'): void {
   for (const file of [...CONFIG_FILES, MCP_CONFIG_FILE]) {
     const dest = path.join(configDir, file);
     if (fs.existsSync(dest)) continue;
-    const src = path.join(templatesDir, file);
+    const useRealVariant = mode === 'real' && REAL_VARIANT_FILES.has(file);
+    const srcName = useRealVariant ? file.replace(/\.md$/, '.real.md') : file;
+    const src = path.join(templatesDir, srcName);
     fs.copyFileSync(src, dest);
   }
 }

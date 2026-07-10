@@ -198,7 +198,18 @@ export function createChat(deps: {
   async function runAssistant(
     sessionId: string,
     turnId: string,
-    input: { text: string; prompt: string; userTurnId: string; attachments?: ChatTurnAttachment[] },
+    input: {
+      text: string;
+      prompt: string;
+      userTurnId: string;
+      attachments?: ChatTurnAttachment[];
+      /**
+       * Mutated in place with each capture_task tool_use summary seen this turn —
+       * read afterwards by the deferred commitment-extraction pass (chat/commitments.ts)
+       * to suppress a commitment that duplicates a fact already captured as a task.
+       */
+      capturedTaskDescriptions?: string[];
+    },
   ): Promise<ChatTurn | null> {
     try {
       // Recall runs before the user turn is FTS-indexed — otherwise the just-sent
@@ -220,6 +231,7 @@ export function createChat(deps: {
           } else if (e.type === 'thinking') {
             bus.broadcast({ type: 'chat.thinking', payload: { turnId, on: e.on } });
           } else if (e.type === 'tool_use') {
+            if (e.name === 'capture_task' && e.summary) input.capturedTaskDescriptions?.push(e.summary);
             bus.broadcast({ type: 'chat.toolUse', payload: { turnId, name: e.name, summary: e.summary } });
           }
         },
@@ -276,8 +288,19 @@ export function createChat(deps: {
       }));
 
       const turnId = nanoid();
+      // Populated in place by runAssistant's tool_use handler with each
+      // capture_task summary seen this turn; read below once runAssistant has
+      // resolved (queueTurn chains strictly in order) so the deferred
+      // commitment pass can dedup against tasks the SAME turn already captured.
+      const capturedTaskDescriptions: string[] = [];
       const done = queueTurn(() =>
-        runAssistant(session.id, turnId, { text, prompt, userTurnId: userTurn.id, attachments }),
+        runAssistant(session.id, turnId, {
+          text,
+          prompt,
+          userTurnId: userTurn.id,
+          attachments,
+          capturedTaskDescriptions,
+        }),
       );
       // Inferred commitments (feature #2): hidden post-turn extraction over the
       // user's own message. Queued right behind the assistant turn (same turn
@@ -287,9 +310,12 @@ export function createChat(deps: {
       // user turn, skipped on empty turns and on the mock chat's `!tool`
       // trigger (see llm/mock.ts).
       if (inferCommitmentsEnabled() && text.trim() && !TOOL_TRIGGER_RE.test(text.trim())) {
-        queueTurn(() => extractCommitments({ db, llm }, { text, sourceTurnId: userTurn.id, now })).catch(
-          () => {},
-        );
+        queueTurn(() =>
+          extractCommitments(
+            { db, llm },
+            { text, sourceTurnId: userTurn.id, now, capturedTaskDescriptions },
+          ),
+        ).catch(() => {});
       }
       return { turnId, done };
     },

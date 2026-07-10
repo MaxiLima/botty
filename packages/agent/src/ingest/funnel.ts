@@ -13,6 +13,7 @@ import {
   type Task,
 } from '@botty/shared';
 import type { Db } from '../db/index.js';
+import { findNearDuplicateTask } from './dedup.js';
 import { matchSignals } from './heuristics.js';
 import { handleGcal, handleTaskSource } from './structured.js';
 import {
@@ -30,7 +31,16 @@ const CLASSIFIER_SYSTEM =
   "You are the ingestion gate of a personal work assistant. Given one inbound message from a key teammate, decide whether it contains actionable content worth extracting: a task or request for the user, a decision that was made, or a commitment someone gave. Social chatter, acknowledgements, rhetorical questions, and FYI noise are NOT worth extracting. Answer with JSON matching { worthExtracting: boolean, confidence: number (0-1), reason: string }.";
 
 const EXTRACTOR_SYSTEM =
-  'You extract structured work items from one inbound message for a personal work assistant. Return JSON with: tasks (things the user is asked to do or someone committed to, short imperative description, optional requesterName / dueDate ISO / priority 1-3), decisions (choices that were made, with rationale when stated), and people (anyone mentioned by name, with slackHandle/email when present). Only extract what the message actually supports; empty arrays are fine.';
+  'You extract structured work items from one inbound message for a personal work assistant. Return JSON with: ' +
+  'tasks (things that need doing — either the user was asked to do them, or the SENDER committed to doing them), ' +
+  'decisions (choices that were made, with rationale when stated), and people (anyone mentioned by name, with ' +
+  'slackHandle/email when present). Each task needs a short imperative description, optional requesterName / ' +
+  "dueDate ISO / priority 1-3, and owner: 'me' when the USER must act, 'them' when the SENDER is the one who " +
+  "committed to it — their OWN promise TO the user (something the user is waiting on, NOT something for the " +
+  'user to do). Never invert these: if the message says "I\'ll send you the doc tomorrow", that is a task with ' +
+  "owner 'them', not a task telling the user to send anything. When a message contains both a promise and a " +
+  "separate ask of the user (e.g. \"I'll send you X — can you review Y first?\"), extract BOTH as separate task " +
+  'entries with their correct owners. Only extract what the message actually supports; empty arrays are fine.';
 
 /**
  * Route one normalized event through ingestion. gcal/jira/github are
@@ -146,8 +156,14 @@ async function runFunnelStages(
 
   const counts = persistExtraction(ctx, event, person, extracted);
   if (!opts.retry) logInteraction(ctx, event, rawLog.id, person.id);
-  stampOutcome(ctx.db, rawLog, event, 'EXTRACTED', counts);
-  return 'EXTRACTED';
+  // Every candidate task matched an already-open cross-source task (ISSUE 2 —
+  // near-duplicate consolidation): nothing new was created, so the Inspector
+  // should say DEDUPED rather than EXTRACTED. Decisions/people still landing
+  // this event keeps it EXTRACTED (something real did happen).
+  const outcome: FunnelOutcome =
+    counts.tasks === 0 && counts.deduped > 0 && counts.decisions === 0 ? 'DEDUPED' : 'EXTRACTED';
+  stampOutcome(ctx.db, rawLog, event, outcome, counts);
+  return outcome;
 }
 
 /** Max extraction attempts per raw event (first pass + retries). */
@@ -218,12 +234,24 @@ function resolveRequester(db: Db, requesterName: string | undefined, actorPerson
   return db.getPersonByName(requesterName) ?? db.upsertDiscoveredPerson({ name: requesterName });
 }
 
+// A type alias (not `interface`) so it structurally satisfies stampOutcome's
+// `Record<string, unknown>` detail parameter (interfaces don't get an implicit
+// index signature; object type literals do).
+export type PersistExtractionResult = {
+  tasks: number;
+  decisions: number;
+  people: number;
+  /** Candidate tasks that matched an existing open task cross-source (see ingest/dedup.ts). */
+  deduped: number;
+  dedupedTasks: { description: string; existingTaskId: string }[];
+};
+
 function persistExtraction(
   ctx: FunnelCtx,
   event: SourceEvent,
   actorPerson: Person,
   extracted: ExtractorOutput,
-): { tasks: number; decisions: number; people: number } {
+): PersistExtractionResult {
   const { db } = ctx;
 
   // people first (so requester lookups can hit them)
@@ -236,12 +264,32 @@ function persistExtraction(
   // distinct item in the same thread moves on to the next free suffix.
   const baseRef = event.threadRef ?? event.externalId;
 
-  // tasks — priority 1 when the requester is Tier 1.
+  // tasks — priority 1 when the requester is Tier 1 AND the task is owner='me'
+  // (a 'them' task is something the user is WAITING ON, not on their plate —
+  // see docs/specs/ingestion.md and the Diego-latency-doc bugfix).
   let tasks = 0;
   let taskSeq = 0;
+  let deduped = 0;
+  const dedupedTasks: { description: string; existingTaskId: string }[] = [];
   for (const t of extracted.tasks) {
+    // ISSUE 2 — cross-source near-duplicate consolidation: the same real-world
+    // ask (e.g. a Slack "can you review PR #482" and a GitHub "review
+    // requested #482") must not become two open tasks. No LLM call — cheap
+    // token heuristics only, conservative by design (see ingest/dedup.ts).
+    const existing = findNearDuplicateTask(db, {
+      description: t.description,
+      rawText: event.text,
+      source: event.source,
+    });
+    if (existing) {
+      deduped += 1;
+      dedupedTasks.push({ description: t.description, existingTaskId: existing.id });
+      continue;
+    }
+
     const requester = resolveRequester(db, t.requesterName, actorPerson);
-    const priority = t.priority ?? (requester.tier === 1 ? 1 : 2);
+    const owner = t.owner ?? 'me';
+    const priority = t.priority ?? (owner === 'them' ? 2 : requester.tier === 1 ? 1 : 2);
     let task: Task | null = null;
     for (;;) {
       const ref = taskSeq === 0 ? baseRef : `${baseRef}#${taskSeq + 1}`;
@@ -253,14 +301,15 @@ function persistExtraction(
           source: event.source,
           sourceRef: ref,
           priority,
+          owner,
           requestedBy: requester.id,
           dueDate: t.dueDate ?? null,
         },
         'funnel',
       );
       if (task) break;
-      const existing = db.getTaskBySourceRef(event.source, ref);
-      if (existing?.rawText === event.text) break; // repeated nag — keep the original task
+      const dupRef = db.getTaskBySourceRef(event.source, ref);
+      if (dupRef?.rawText === event.text) break; // repeated nag — keep the original task
       // slot held by a different item in this thread — try the next one
     }
     if (task) {
@@ -301,5 +350,5 @@ function persistExtraction(
   }
 
   if (tasks > 0) broadcastTasksUpdated(ctx);
-  return { tasks, decisions, people: extracted.people.length };
+  return { tasks, decisions, people: extracted.people.length, deduped, dedupedTasks };
 }

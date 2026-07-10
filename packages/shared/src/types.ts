@@ -25,6 +25,11 @@ export type Person = z.infer<typeof PersonSchema>;
 export const TaskStatusSchema = z.enum(['open', 'snoozed', 'done', 'cancelled', 'merged', 'archived']);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 
+/** 'me' = the user must act; 'them' = the other person's own stated commitment TO the
+ * user — a "waiting on <them>" reminder, not a to-do (see ingest/funnel.ts). */
+export const TaskOwnerSchema = z.enum(['me', 'them']);
+export type TaskOwner = z.infer<typeof TaskOwnerSchema>;
+
 export const TaskSchema = z.object({
   id: z.string(),
   description: z.string(),
@@ -33,6 +38,7 @@ export const TaskSchema = z.object({
   sourceRef: z.string().nullable(),
   status: TaskStatusSchema,
   priority: z.number(),
+  owner: TaskOwnerSchema.default('me'),
   requestedBy: z.string().nullable(),
   requesterName: z.string().nullable().optional(),
   projectId: z.string().nullable(),
@@ -326,6 +332,10 @@ export const ExtractorOutputSchema = z.object({
         requesterName: z.string().optional(),
         dueDate: z.string().optional(),
         priority: z.number().optional(),
+        // 'me' when the user must act, 'them' when the SENDER made the commitment
+        // (their own promise to the user, e.g. "I'll send you X tomorrow"). Absent
+        // ⇒ defaults to 'me' at persist time (see ingest/funnel.ts persistExtraction).
+        owner: TaskOwnerSchema.optional(),
       }),
     )
     .default([]),

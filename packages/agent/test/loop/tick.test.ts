@@ -217,6 +217,118 @@ describe('runTick', () => {
     expect(skipped.droppedActions[0]!.reason).toBe('below_threshold');
   });
 
+  describe('hourly nudge budget (step 9.5)', () => {
+    // Three due-soon tasks (dueDate < 24h away) so validateJudgment's one-notify-
+    // per-tick cap exempts all three notify actions — the only thing left to
+    // enforce max_proactive_per_hour is the step-9.5 budget under test here.
+    function dueSoonTasks(db: Db, n: number) {
+      return Array.from({ length: n }, (_, i) =>
+        db.insertTask({
+          description: `Due-soon task ${i + 1}`,
+          source: 'manual',
+          dueDate: new Date(Date.now() + (i + 1) * 3_600_000).toISOString(),
+        })!,
+      );
+    }
+
+    it('budget free (2 of 2 fit): both notifies pass, nothing dropped for budget', async () => {
+      const tasks = dueSoonTasks(db, 2);
+      const judgment: JudgmentOutput = {
+        tickReasoning: 'both matter',
+        actions: [
+          { type: 'notify', taskId: tasks[0]!.id, score: 9, message: 'a', reasoning: 'r' },
+          { type: 'notify', taskId: tasks[1]!.id, score: 8, message: 'b', reasoning: 'r' },
+        ],
+        skipped: [],
+      };
+      const { deps, macNotifier } = makeDeps(db, bus, heartbeat(), judgment);
+      const id = await runTick(deps, { trigger: 'run-now' });
+
+      const tick = db.getTick(id)!;
+      const actions = JSON.parse(tick.actionsJson!) as { type: string; taskId: string }[];
+      expect(actions.map((a) => a.taskId).sort()).toEqual([tasks[0]!.id, tasks[1]!.id].sort());
+      const skipped = JSON.parse(tick.skippedJson!) as { droppedActions: { reason: string }[] };
+      expect(skipped.droppedActions.filter((d) => d.reason === 'hourly_budget')).toHaveLength(0);
+      expect(macNotifier).toHaveBeenCalledTimes(2);
+    });
+
+    it('budget partially consumed (1 of 2 already used): only 1 notify passes, lowest score dropped', async () => {
+      // One nudge already logged in the trailing hour (but older than the 30min
+      // min-gap, so gate 6 doesn't block candidates outright) ⇒ only 1 slot
+      // remains of max_proactive_per_hour (default 2).
+      db.insertProactiveLog({
+        taskId: null,
+        surfaceKind: 'nudge',
+        message: 'earlier nudge',
+        surfacedAt: new Date(Date.now() - 35 * 60_000).toISOString(),
+      });
+      const tasks = dueSoonTasks(db, 2);
+      const judgment: JudgmentOutput = {
+        tickReasoning: 'both matter',
+        actions: [
+          { type: 'notify', taskId: tasks[0]!.id, score: 9, message: 'high score', reasoning: 'r' },
+          { type: 'notify', taskId: tasks[1]!.id, score: 7, message: 'low score', reasoning: 'r' },
+        ],
+        skipped: [],
+      };
+      const { deps, macNotifier } = makeDeps(db, bus, heartbeat(), judgment);
+      const id = await runTick(deps, { trigger: 'run-now' });
+
+      const tick = db.getTick(id)!;
+      const actions = JSON.parse(tick.actionsJson!) as { type: string; taskId: string }[];
+      expect(actions.map((a) => a.taskId)).toEqual([tasks[0]!.id]);
+      const skipped = JSON.parse(tick.skippedJson!) as {
+        droppedActions: { taskId: string; reason: string }[];
+      };
+      expect(skipped.droppedActions).toContainEqual({
+        taskId: tasks[1]!.id,
+        type: 'notify',
+        reason: 'hourly_budget',
+      });
+      expect(macNotifier).toHaveBeenCalledTimes(1);
+      expect(macNotifier).toHaveBeenCalledWith('botty', 'high score');
+    });
+
+    // NOTE: a runTick-level "budget already fully exhausted before judgment runs"
+    // case is NOT reachable through this path — rules-filter's own gate 8
+    // (hourly_cap) shares the exact same nudgesLastHour/maxProactivePerHour
+    // comparison, so any candidate that would see a 0-remaining budget here is
+    // already rejected at the rules-filter stage first (structured() is never
+    // even called; see the zero-cost floor, tick.ts step 6). That is by design:
+    // the two layers must never disagree about when the budget is gone. The
+    // exhausted-budget behavior of the capping logic itself (0 remaining ⇒ every
+    // notify dropped) is covered directly at the unit level in judgment.test.ts
+    // ('applyHourlyBudget' > 'budget exhausted').
+
+    it('reproduces the reported bug: a single judgment call returning 3 notifies is capped to 2, lowest score dropped', async () => {
+      const tasks = dueSoonTasks(db, 3);
+      const judgment: JudgmentOutput = {
+        tickReasoning: 'all three matter, allegedly',
+        actions: [
+          { type: 'notify', taskId: tasks[0]!.id, score: 9, message: 'a', reasoning: 'r' },
+          { type: 'notify', taskId: tasks[1]!.id, score: 8, message: 'b', reasoning: 'r' },
+          { type: 'notify', taskId: tasks[2]!.id, score: 7, message: 'c', reasoning: 'r' },
+        ],
+        skipped: [],
+      };
+      const { deps, macNotifier } = makeDeps(db, bus, heartbeat(), judgment);
+      const id = await runTick(deps, { trigger: 'run-now' });
+
+      const tick = db.getTick(id)!;
+      const actions = JSON.parse(tick.actionsJson!) as { type: string; taskId: string }[];
+      expect(actions.map((a) => a.taskId).sort()).toEqual([tasks[0]!.id, tasks[1]!.id].sort());
+      const skipped = JSON.parse(tick.skippedJson!) as {
+        droppedActions: { taskId: string; reason: string }[];
+      };
+      expect(skipped.droppedActions).toContainEqual({
+        taskId: tasks[2]!.id,
+        type: 'notify',
+        reason: 'hourly_budget',
+      });
+      expect(macNotifier).toHaveBeenCalledTimes(2); // NOT 3 — the bug is fixed.
+    });
+  });
+
   it('judgment failure retries once, then fails open: clean no-actions tick, error recorded', async () => {
     const task = db.insertTask({ description: 'Anything at all', source: 'manual' })!;
     db.raw

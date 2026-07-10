@@ -1,6 +1,7 @@
 // Mirrors packages/web/src/lib/format.ts so both clients present the same
 // values for the same data (priority direction, age tiers, fallbacks).
 // Candidate to hoist into @botty/shared if a third client appears.
+import type { ScheduleInfo } from './api.js';
 
 /** "3m" / "2h" / "5d" style relative age from an ISO timestamp. */
 export function timeAgo(iso: string | null | undefined): string {
@@ -51,4 +52,51 @@ export function priorityColor(p: number): string | undefined {
 /** Same open-board ordering as the web TasksPage: ascending priority (1 = HIGH first), then oldest. */
 export function byPriorityThenAge(a: { priority: number; createdAt: string }, b: { priority: number; createdAt: string }): number {
   return a.priority - b.priority || a.createdAt.localeCompare(b.createdAt);
+}
+
+/**
+ * Botty's proactive silence during off-hours/quiet-hours/inactive days is by
+ * design, but looks indistinguishable from "broken" without a hint. `schedule`
+ * is optional on the health response (older agents omit it) — undefined means
+ * "say nothing", not "assume always-on".
+ */
+export function scheduleHint(schedule: ScheduleInfo | null | undefined): string | null {
+  if (!schedule) return null;
+  if (!schedule.activeToday) return 'inactive today';
+  if (schedule.quietHours) return `quiet ${schedule.quietHoursRange}`;
+  if (!schedule.withinWorkingHours) return 'off-hours';
+  return null;
+}
+
+/**
+ * Aggregates the gate keys recorded in a tick's `skippedJson` into a compact
+ * summary, e.g. "(quiet_hours×11, cooldown×1)" — null when there's nothing to
+ * show. Shapes observed from packages/agent/src/loop/tick.ts:
+ *   - a whole-tick skip: {"timing":"off_hours"|"quiet_hours"|"inactive_day"}
+ *   - a per-candidate rejection log: {"rules":[{"taskId":..,"gate":"cooldown"}, ...], ...}
+ * Both can carry a "gate" (or "timing") string we count occurrences of.
+ */
+export function summarizeGates(skippedJson: string | null | undefined): string | null {
+  if (!skippedJson) return null;
+  let data: unknown;
+  try {
+    data = JSON.parse(skippedJson);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object') return null;
+  const counts = new Map<string, number>();
+  const bump = (k: unknown) => {
+    if (typeof k === 'string' && k) counts.set(k, (counts.get(k) ?? 0) + 1);
+  };
+  const obj = data as Record<string, unknown>;
+  bump(obj['timing']);
+  if (Array.isArray(obj['rules'])) {
+    for (const r of obj['rules']) {
+      if (r && typeof r === 'object') bump((r as Record<string, unknown>)['gate']);
+    }
+  }
+  if (counts.size === 0) return null;
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([gate, n]) => `${gate}×${n}`);
+  return `(${parts.join(', ')})`;
 }

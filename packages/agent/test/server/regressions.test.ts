@@ -202,6 +202,52 @@ describe('bug A: POST /api/tasks/:id/action bounds priority + snoozeDays', () =>
   });
 });
 
+// M2: "snooze until tomorrow 9am" landed at whatever time-of-day the request
+// happened to run at, since only whole-day snoozeDays existed. snoozeUntil is
+// the same fix as chat/tools.ts task_action, mirrored here for the web client.
+describe('snoozeUntil: exact wall-clock snooze on POST /api/tasks/:id/action', () => {
+  it('sets snoozeUntil to the exact instant and takes precedence over snoozeDays', async () => {
+    const h = await setup();
+    try {
+      const t = seedTask(h);
+      const target = new Date(Date.now() + 18 * 3_600_000).toISOString();
+      const res = await postAction(h, t.id, { action: 'snooze', snoozeUntil: target, snoozeDays: 5 });
+      expect(res.status).toBe(200);
+      const { task } = (await res.json()) as { task: Task };
+      expect(task.status).toBe('snoozed');
+      expect(task.snoozeUntil).toBe(target);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects a snoozeUntil in the past with 400 validation_error, task untouched', async () => {
+    const h = await setup();
+    try {
+      const t = seedTask(h);
+      const past = new Date(Date.now() - 60_000).toISOString();
+      const res = await postAction(h, t.id, { action: 'snooze', snoozeUntil: past });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getTask(t.id)!.status).toBe('open');
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects a snoozeUntil without an offset/zone at the schema level', async () => {
+    const h = await setup();
+    try {
+      const t = seedTask(h);
+      const res = await postAction(h, t.id, { action: 'snooze', snoozeUntil: '2026-07-10T09:00:00' });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('validation_error');
+    } finally {
+      await h.teardown();
+    }
+  });
+});
+
 describe('bug B: POST /api/chat/seal responds without waiting on the LLM summary', () => {
   it('returns promptly even when the summarizer LLM call hangs', async () => {
     // Structured calls never resolve — if the route awaited the summary inline,
