@@ -47,26 +47,19 @@ Expected: a macOS banner ("botty — Notificación de prueba…") **and** a card
    `open /opt/homebrew/Cellar/terminal-notifier/*/terminal-notifier.app` once (CLI-only use
    never registers it), then System Settings → Notifications → terminal-notifier → Allow +
    style Banners/Alerts. This is botty's primary delivery path.
-3. **Fallback applet** — if terminal-notifier is absent, botty uses its own applet at
-   `~/.botty/botty-notifier.app` (launched via `open -a`; note a raw-executable launch delivers
-   nothing on macOS 15). Build it once:
+3. **Fallback applet** — if terminal-notifier is absent (or fails), botty falls back to its own
+   compiled "Botty" identity app at `~/.botty/Botty.app`, launched via `open -a` (a raw-executable
+   invocation delivers nothing on macOS 15) — see `loop/notify-macos.ts:30,48`. Build it once:
 
 ```sh
-cat > /tmp/botty-notifier.applescript <<'EOF'
-on run argv
-  if (count of argv) >= 2 then
-    display notification (item 2 of argv) with title (item 1 of argv)
-  end if
-  delay 1
-end run
-EOF
-osacompile -o ~/.botty/botty-notifier.app /tmp/botty-notifier.applescript
-~/.botty/botty-notifier.app/Contents/MacOS/applet "botty" "hola"   # triggers the permission prompt
+npm run setup:notifier -w @botty/agent
 ```
 
-Accept the permission prompt (or enable **botty-notifier** in System Settings → Notifications,
-style Banners/Alerts). botty auto-detects the applet and uses it; fallbacks are
-terminal-notifier, then osascript.
+This `osacompile`s `~/.botty/Botty.app` (bundle id `io.maxolabs.botty`), ad-hoc codesigns it, and
+launches it once so it registers with Notification Center. Accept the permission prompt (or enable
+**Botty** in System Settings → Notifications, style Banners/Alerts). With both installed,
+terminal-notifier sends banners *as* "Botty" (`-sender io.maxolabs.botty`) once the identity app is
+authorized; the fallback chain is terminal-notifier → the Botty applet → plain `osascript`.
 
 **Real end-to-end nudge:**
 

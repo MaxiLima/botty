@@ -45,6 +45,25 @@ describe('hydratePendingActions', () => {
     const earlier = action('a', { createdAt: '2026-07-09T00:00:00.000Z' });
     expect(hydratePendingActions([], [later, earlier]).map((x) => x.id)).toEqual(['a', 'bb']);
   });
+
+  it('does not let a fetched pending row revert a locally-resolved entry (reconnect race)', () => {
+    // A concurrent action.resolved WS event (or a POST response) already moved
+    // 'a' to a terminal status by the time the in-flight ?status=pending fetch
+    // resolves — its stale 'pending' row for 'a' must lose, not win.
+    const resolved = action('a', { status: 'executed', resultJson: '{"ok":true}' });
+    const staleFetch = [action('a', { status: 'pending' }), action('bb')];
+    const next = hydratePendingActions([resolved], staleFetch);
+    expect(next.find((x) => x.id === 'a')).toEqual(resolved);
+    expect(next.map((x) => x.id)).toEqual(['a', 'bb']);
+  });
+
+  it('still refreshes a locally-pending entry from a fresh pending fetch', () => {
+    const stalePending = action('a', { status: 'pending', summary: 'stale summary' });
+    const freshPending = action('a', { status: 'pending', summary: 'fresh summary' });
+    const next = hydratePendingActions([stalePending], [freshPending]);
+    expect(next[0]?.status).toBe('pending');
+    expect(next[0]?.summary).toBe('fresh summary');
+  });
 });
 
 describe('addPendingAction', () => {

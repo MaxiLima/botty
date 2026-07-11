@@ -95,9 +95,15 @@ export function createLoop(ctx: AgentContext): Loop {
     // config hot-reloads still get picked up). runTick itself re-checks the
     // gate at fire time, so a tick scheduled inside the window that fires
     // after it closes is still a hard no-op.
+    const untilWindow = msUntilNextTime(new Date(), hb.workingHours.start);
     const delayMs = isWithinWorkingHours(new Date().toISOString(), hb)
       ? intervalMs
-      : Math.min(intervalMs, msUntilNextTime(new Date(), hb.workingHours.start));
+      // An unparseable working_hours.start (should be caught by config
+      // validation and rejected to last-known-good) falls back to the normal
+      // cadence rather than a bogus midnight arm — see loop/time.ts.
+      : untilWindow === null
+        ? intervalMs
+        : Math.min(intervalMs, untilWindow);
     tickTimer = setTimeout(async () => {
       // Stopped, or a heartbeat.md reload armed a newer chain while we were
       // waiting to fire: let this chain die instead of running/re-arming.
@@ -133,9 +139,14 @@ export function createLoop(ctx: AgentContext): Loop {
     const intervalMs = Math.max(1, hb.resolutionSweepIntervalMin) * 60_000;
     // Same off-hours strategy as ticks: sleep until the window reopens (capped
     // at one interval so config hot-reloads still get picked up).
+    const untilWindow = msUntilNextTime(new Date(), hb.workingHours.start);
     const delayMs = isWithinWorkingHours(new Date().toISOString(), hb)
       ? intervalMs
-      : Math.min(intervalMs, msUntilNextTime(new Date(), hb.workingHours.start));
+      // See scheduleNextTick: an unparseable working_hours.start falls back
+      // to the normal cadence instead of a bogus midnight arm.
+      : untilWindow === null
+        ? intervalMs
+        : Math.min(intervalMs, untilWindow);
     sweepTimer = setTimeout(async () => {
       // Stopped, or a heartbeat.md reload armed a newer chain while we were
       // waiting to fire: let this chain die instead of running/re-arming.
@@ -166,6 +177,15 @@ export function createLoop(ctx: AgentContext): Loop {
     const at = kind === 'morning_brief' ? hb.morningBriefAt : hb.eveningBriefAt;
     const existing = briefTimers.get(kind);
     if (existing) clearTimeout(existing);
+    const delayMs = msUntilNextTime(new Date(), at);
+    if (delayMs === null) {
+      // Unparseable brief time (should be caught by config validation and
+      // rejected to last-known-good): don't arm a bogus midnight timer —
+      // leave the kind unscheduled until a config reload re-arms it.
+      briefTimers.delete(kind);
+      console.error(`[loop] ${kind}_at "${at}" is invalid — ${kind} timer not armed`);
+      return;
+    }
     const timer = setTimeout(async () => {
       try {
         // Briefings ignore the notify caps, but the HARD working-hours gate
@@ -179,7 +199,7 @@ export function createLoop(ctx: AgentContext): Loop {
         console.error(`[loop] ${kind} failed:`, (err as Error).message);
       }
       scheduleBriefing(kind);
-    }, msUntilNextTime(new Date(), at));
+    }, delayMs);
     briefTimers.set(kind, timer);
   }
 

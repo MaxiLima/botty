@@ -147,22 +147,43 @@ export function App({ config }: { config: TuiConfig }) {
   }, [api]);
 
   // Banner (agent info + open-task count) plus history — one parallel round trip.
+  // Health is the reachability signal: only its failure means "can't reach the
+  // agent". A transient failure on tasks/history degrades that one endpoint
+  // (empty board / empty thread + a soft warning) without blocking boot.
   const loadInitial = useCallback(async () => {
     if (bootingRef.current) return;
     bootingRef.current = true;
     try {
-      const [h, t, hist] = await Promise.all([api.health(), api.tasks('open'), api.chatHistory(config.historyLimit)]);
-      setTaskCount(t.tasks.length);
+      const [hRes, tRes, histRes] = await Promise.allSettled([
+        api.health(),
+        api.tasks('open'),
+        api.chatHistory(config.historyLimit),
+      ]);
+      if (hRes.status === 'rejected') {
+        pushItem({ kind: 'error', text: `can't reach the agent at ${config.baseUrl} — is it running?` });
+        return;
+      }
+      const h = hRes.value;
+      bootOkRef.current = true;
       setSchedule(h.schedule);
+
+      const taskCount = tRes.status === 'fulfilled' ? tRes.value.tasks.length : 0;
+      setTaskCount(taskCount);
       pushItem({
         kind: 'panel',
-        panel: { type: 'welcome', version: h.version, mode: h.mode, baseUrl: config.baseUrl, taskCount: t.tasks.length },
+        panel: { type: 'welcome', version: h.version, mode: h.mode, baseUrl: config.baseUrl, taskCount },
       });
-      appendTurns(hist.turns);
-      bootOkRef.current = true;
+      if (tRes.status === 'rejected') {
+        pushItem({ kind: 'info', text: "couldn't load tasks — showing an empty board" });
+      }
+
+      if (histRes.status === 'fulfilled') {
+        appendTurns(histRes.value.turns);
+      } else {
+        pushItem({ kind: 'info', text: "couldn't load chat history — starting with an empty thread" });
+      }
+
       void refreshApprovals();
-    } catch {
-      pushItem({ kind: 'error', text: `can't reach the agent at ${config.baseUrl} — is it running?` });
     } finally {
       bootingRef.current = false;
     }

@@ -153,11 +153,14 @@ async function loadTemplates() {
   } catch (e) { /* ignore */ }
 }
 
-// Template fields with no form input (threadRef, direction) ride along on inject.
+// Template fields with no form input (threadRef, direction, actor displayName) ride along on inject.
 let tmplExtra = {};
 $('tmplSel').onchange = () => {
-  const t = templates[Number($('tmplSel').value)];
-  if (!t) return;
+  const v = $('tmplSel').value;
+  // '' is the "— template —" placeholder; Number('') === 0 would otherwise reload templates[0].
+  if (v === '') { tmplExtra = {}; return; }
+  const t = templates[Number(v)];
+  if (!t) { tmplExtra = {}; return; }
   $('injSource').value = t.event.source;
   $('injKind').value = t.event.kind;
   $('injHandle').value = (t.event.actor && t.event.actor.handle) || '';
@@ -167,6 +170,7 @@ $('tmplSel').onchange = () => {
   tmplExtra = {};
   if (t.event.threadRef) tmplExtra.threadRef = t.event.threadRef;
   if (t.event.direction) tmplExtra.direction = t.event.direction;
+  if (t.event.actor && t.event.actor.displayName) tmplExtra.displayName = t.event.actor.displayName;
 };
 
 $('loadBtn').onclick = async () => {
@@ -183,9 +187,16 @@ $('injBtn').onclick = async () => {
     const actor = {};
     if ($('injHandle').value) actor.handle = $('injHandle').value;
     if ($('injEmail').value) actor.email = $('injEmail').value;
-    const body = Object.assign({}, tmplExtra, { source: $('injSource').value, kind: $('injKind').value || 'dm', actor, text: $('injText').value });
+    if (tmplExtra.displayName) actor.displayName = tmplExtra.displayName;
+    const body = { source: $('injSource').value, kind: $('injKind').value || 'dm', actor, text: $('injText').value };
+    if (tmplExtra.threadRef) body.threadRef = tmplExtra.threadRef;
+    if (tmplExtra.direction) body.direction = tmplExtra.direction;
     if ($('injMeta').value.trim()) body.meta = JSON.parse($('injMeta').value);
     const r = await api('/control/inject', body);
+    // Reset template linkage after every inject: a hand-typed follow-up (no re-selection)
+    // must never inherit a stale threadRef/direction/displayName from a prior template.
+    tmplExtra = {};
+    $('tmplSel').value = '';
     flash('injected ' + r.event.externalId);
   } catch (e) { flash(e.message); }
   refresh();

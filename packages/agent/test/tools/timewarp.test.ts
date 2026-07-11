@@ -160,3 +160,51 @@ describe('applyTimewarp — migrations 004/005 tables', () => {
     expect(row.resolved_at).toBeNull();
   });
 });
+
+// L4: SHIFTS only reaches plain DB columns — settings.value is an opaque JSON
+// blob, so the ISO timestamps botty stashes inside heartbeat.checklistState
+// and ingest.lastCheck.<source> were never aging with a timewarp, silently
+// leaving checklist items looking freshly-run and ingest watermarks unmoved.
+describe('applyTimewarp — settings-stored ISO timestamps', () => {
+  it('shifts every lastRunAt inside heartbeat.checklistState', () => {
+    const db = new Db(':memory:');
+    db.setSetting('heartbeat.checklistState', {
+      'end-of-day-recap': '2026-07-09T18:00:00.000Z',
+      'morning-standup-check': '2026-07-09T09:00:00.000Z',
+    });
+
+    applyTimewarp(db.raw, 6);
+
+    const state = db.getSetting<Record<string, string>>('heartbeat.checklistState');
+    expect(state).toEqual({
+      'end-of-day-recap': '2026-07-09T12:00:00.000Z',
+      'morning-standup-check': '2026-07-09T03:00:00.000Z',
+    });
+  });
+
+  it('shifts ingest.lastCheck.<source> watermarks', () => {
+    const db = new Db(':memory:');
+    db.setSetting('ingest.lastCheck.slack', '2026-07-09T09:00:00.000Z');
+    db.setSetting('ingest.lastCheck.gmail', '2026-07-09T09:30:00.000Z');
+
+    applyTimewarp(db.raw, 6);
+
+    expect(db.getSetting<string>('ingest.lastCheck.slack')).toBe('2026-07-09T03:00:00.000Z');
+    expect(db.getSetting<string>('ingest.lastCheck.gmail')).toBe('2026-07-09T03:30:00.000Z');
+  });
+
+  it('leaves unrelated settings keys untouched', () => {
+    const db = new Db(':memory:');
+    db.setSetting('some.other.key', { unrelated: true });
+    applyTimewarp(db.raw, 6);
+    expect(db.getSetting('some.other.key')).toEqual({ unrelated: true });
+  });
+
+  it('counts shifted settings rows in the returned total', () => {
+    const db = new Db(':memory:');
+    db.setSetting('heartbeat.checklistState', { a: '2026-07-09T09:00:00.000Z' });
+    db.setSetting('ingest.lastCheck.slack', '2026-07-09T09:00:00.000Z');
+    const total = applyTimewarp(db.raw, 6);
+    expect(total).toBe(2); // no other rows in this DB to shift
+  });
+});

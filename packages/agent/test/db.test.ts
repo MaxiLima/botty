@@ -230,6 +230,58 @@ describe('Db', () => {
     expect(failed.outputJson).toBeNull();
   });
 
+  it('chatHistory keyset pagination with beforeId does not skip rows tied on created_at', () => {
+    const session = db.createSession();
+    // Three turns sharing one created_at millisecond, inserted with ids in
+    // descending sort order so the DESC ordering is deterministic and known.
+    const tied = ['c', 'b', 'a'];
+    const sameCreatedAt = '2026-07-10T10:00:00.000Z';
+    for (const id of tied) {
+      db.raw
+        .prepare(
+          'INSERT INTO chat_turns (id, session_id, role, content, meta, created_at) VALUES (?, ?, ?, ?, NULL, ?)',
+        )
+        .run(id, session.id, 'user', `turn-${id}`, sameCreatedAt);
+    }
+
+    // Page 1: only 2 of the 3 tied rows fit in the limit.
+    const page1 = db.chatHistory({ limit: 2 });
+    expect(page1.map((t) => t.id)).toEqual(['b', 'c']); // oldest-last reversed to oldest-first
+
+    const boundary = page1[0]!; // 'b' — the oldest row on this page, i.e. the next cursor
+    // Old behavior: created_at < boundary.createdAt alone would exclude 'a'
+    // too, since it ties on the same millisecond — permanently skipping it.
+    const legacyPage = db.chatHistory({ limit: 2, before: boundary.createdAt });
+    expect(legacyPage.map((t) => t.id)).toEqual([]); // demonstrates the bug
+
+    // Fixed behavior: composite (created_at, id) cursor still finds 'a'.
+    const page2 = db.chatHistory({ limit: 2, before: boundary.createdAt, beforeId: boundary.id });
+    expect(page2.map((t) => t.id)).toEqual(['a']);
+  });
+
+  it('listAiDecisions keyset pagination with beforeId does not skip rows tied on created_at', () => {
+    const sameCreatedAt = '2026-07-10T10:00:00.000Z';
+    const tied = ['c', 'b', 'a'];
+    for (const id of tied) {
+      db.raw
+        .prepare(
+          `INSERT INTO ai_decisions (id, kind, input_json, output_json, model, latency_ms, input_tokens, output_tokens, related_ref, error, created_at)
+           VALUES (?, 'judgment', '{}', NULL, 'claude-sonnet-5', NULL, NULL, NULL, NULL, NULL, ?)`,
+        )
+        .run(id, sameCreatedAt);
+    }
+
+    const page1 = db.listAiDecisions({ limit: 2 });
+    expect(page1.map((d) => d.id)).toEqual(['c', 'b']);
+
+    const boundary = page1[1]!; // 'b' — the last row on this page, i.e. the next cursor
+    const legacyPage = db.listAiDecisions({ limit: 2, before: boundary.createdAt });
+    expect(legacyPage.map((d) => d.id)).toEqual([]); // demonstrates the bug
+
+    const page2 = db.listAiDecisions({ limit: 2, before: boundary.createdAt, beforeId: boundary.id });
+    expect(page2.map((d) => d.id)).toEqual(['a']);
+  });
+
   it('calendar events upsert by external id', () => {
     db.upsertCalendarEvent({ externalId: 'ev1', title: 'Standup', startAt: '2026-07-04T13:00:00Z' });
     db.upsertCalendarEvent({ externalId: 'ev1', title: 'Standup (moved)', startAt: '2026-07-04T14:00:00Z' });

@@ -24,6 +24,29 @@ section below).
   Diego's DM wrongly created "Send latency doc" owned by the user; now correctly tagged
   `owner='them'`. **Flag for judgment-replay**: JUDGMENT_SYSTEM picked up a new bullet —
   replay before shipping.
+- ~~Inspection sweep + fix wave~~ **shipped 2026-07-11**: 26 findings from the
+  2026-07-10 four-angle inspection (security / agent-core / clients / DX) fixed in one
+  orchestrated pass. Highlights: pending-action approve/dismiss race closed with a
+  synchronous in-flight claim (concurrent approves → exactly one execution); REST
+  middleware now rejects non-local `Origin` (closes the no-body-POST CSRF token-burn
+  vector); `PUT /api/settings` allowlisted to `llm.models`/`llm.pricing`; briefing
+  prompt gained the untrusted-content markers (the last unguarded LLM surface);
+  stale-commitment expiry moved after delivery so weekend-due commitments survive to
+  Monday's first tick; bare-number tokens (years/times) no longer count as distinctive
+  dedup identifiers; HH:MM range validation with warnings + last-known-good (and
+  `msUntilNextTime` no longer arms midnight timers on garbage); composite
+  `(created_at, id)` pagination cursors for chat history and decisions; web
+  multi-client fix (TUI-sent user turns now appear via adopt→tail-refetch),
+  approval-card/open-count reconnect races, drawer cancellation, Enter double-POST;
+  TUI per-endpoint boot degradation; sim panel inject-form fixes (placeholder no-op,
+  single-shot template extras, displayName carried). Docs synced (api.md,
+  data-model.md, new specs/mcp.md, commitments/chat-tools sections, TESTING.md
+  notifier → `setup:notifier`, README prerequisites/env-table/real-mode caveat);
+  tooling: root `timewarp`/`replay`/`setup` scripts, `.nvmrc` + CI pin,
+  `.editorconfig`, timewarp + db-migration skills. Verified e2e on the isolated
+  5820/5821 instance (origin guard, allowlist, funnel+dedup, tick, pagination,
+  TUI boot, cross-client chat via puppeteer, sim panel). Deliberately deferred:
+  LICENSE choice and lint/formatter (Biome) adoption — both owner decisions.
 
 ## P0 — becoming the daily driver
 
@@ -172,7 +195,9 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
   **Partially covered 2026-07-09 (fix sweep)**: the hourly-budget + waiting-on prompt
   changes were replayed against 12 live-DB rows (all skip-days) + 3 notify-bearing rows
   from the dogfooding DB — zero behavioral drift (only reason-wording noise). The curated
-  eval set over a busier mix is still worth building.
+  eval set over a busier mix is still worth building. **New flag 2026-07-11**:
+  BRIEFING_SYSTEM changed (untrusted-content markers + treat-as-data guard) — replay
+  recorded briefing decisions before trusting the next morning/evening brief.
 - ~~**Usage panel**: tokens/latency per call are already in `ai_decisions`; surface daily totals
   per task-kind in the UI (pairs with the working-hours token-saving goal).~~ **shipped
   2026-07-08** as the Costs report: `GET /api/costs` prices the `ai_decisions` rollup at

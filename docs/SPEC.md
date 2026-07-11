@@ -132,11 +132,14 @@ Via Claude Agent SDK, authenticated by the user's Claude Code subscription. Task
 | `chat` | `claude-sonnet-5` | warm session, streaming |
 | `judgment` | `claude-sonnet-5` | one-shot structured per tick |
 | `classification` | `claude-haiku-4-5` | "worth extracting?" gate |
-| `extraction` | `claude-haiku-4-5` | entities from raw events |
+| `extraction` | `claude-haiku-4-5` | entities from raw events; also reused for chat's inferred-commitment pass (`specs/loop.md`) |
 | `briefing` | `claude-sonnet-5` | morning/evening digests |
+| `resolution` | `claude-sonnet-5` | resolution sweep auto-close judgment — wrongly closing a task is worse than a missed nudge, so it gets the judgment-tier model, not haiku |
+| `seal` | `claude-haiku-4-5` | session-seal summaries — housekeeping, not user-facing judgment, so it's routed cheap |
 
 `claude-opus-4-8` available as an escalation option per task. Every call is recorded in
-`ai_decisions` (inputs, output, model, latency, tokens).
+`ai_decisions` (inputs, output, model, latency, tokens); routing is `LlmTask` → model
+(`@botty/shared`'s `DEFAULT_MODELS`), user-overridable via the `llm.models` setting.
 
 ## 7. Milestones (each independently useful)
 

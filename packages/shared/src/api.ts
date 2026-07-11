@@ -56,10 +56,11 @@ export const WsEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('chat.done'), payload: z.object({ turnId: z.string(), turn: ChatTurnSchema }) }),
   z.object({ type: z.literal('chat.error'), payload: z.object({ turnId: z.string(), error: z.string() }) }),
-  // Always a FULL board snapshot, never a delta of just the touched task(s) —
-  // every sender must broadcast the full result of db.listTasks(...) after a
-  // write. Consumers are free to treat `tasks` as authoritative (e.g. derive
-  // an open-task count from it) without merging against prior state.
+  // Always a FULL open-board snapshot, never a delta of just the touched
+  // task(s) — every sender must broadcast the full result of
+  // db.listTasks('open') after a write (open tasks only, not the whole
+  // table). Consumers are free to treat `tasks` as authoritative (e.g.
+  // derive an open-task count from it) without merging against prior state.
   z.object({ type: z.literal('tasks.updated'), payload: z.object({ tasks: z.array(TaskSchema) }) }),
   z.object({
     type: z.literal('notification'),

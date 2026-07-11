@@ -76,8 +76,11 @@ export const api = {
   health: () => req<{ ok: boolean; version: string; mode: string; dbPath: string }>('GET', '/api/health'),
 
   // Chat
-  chatHistory: (limit?: number, before?: string) =>
-    req<{ turns: ChatTurn[]; sessions: SessionMeta[] }>('GET', `/api/chat/history${qs({ limit, before })}`),
+  // `beforeId` (the boundary row's id from the previous page) turns `before`
+  // into a composite (createdAt, id) cursor, so rows tied on `before`'s
+  // millisecond aren't skipped at the LIMIT cut.
+  chatHistory: (limit?: number, before?: string, beforeId?: string) =>
+    req<{ turns: ChatTurn[]; sessions: SessionMeta[] }>('GET', `/api/chat/history${qs({ limit, before, beforeId })}`),
   chatSend: (body: ChatSendBody) => req<{ turnId: string }>('POST', '/api/chat/message', body),
   chatInterrupt: () => req<{ ok: boolean }>('POST', '/api/chat/interrupt', {}),
   chatSeal: () => req<{ ok: boolean }>('POST', '/api/chat/seal', {}),
@@ -96,7 +99,10 @@ export const api = {
   projects: () => req<{ projects: Project[] }>('GET', '/api/projects'),
 
   // Inspector
-  decisions: (opts: { kind?: string; limit?: number; before?: string } = {}) =>
+  // `beforeId` (the boundary row's id from the previous page) turns `before`
+  // into a composite (createdAt, id) cursor, so rows tied on `before`'s
+  // millisecond aren't skipped at the LIMIT cut.
+  decisions: (opts: { kind?: string; limit?: number; before?: string; beforeId?: string } = {}) =>
     req<{ decisions: AiDecision[] }>('GET', `/api/decisions${qs(opts)}`),
   ticks: (limit?: number) => req<{ ticks: TickLogRow[] }>('GET', `/api/ticks${qs({ limit })}`),
   tick: (id: string) => req<{ tick: TickLogRow; judgment?: AiDecision }>('GET', `/api/ticks/${id}`),

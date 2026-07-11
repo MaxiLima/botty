@@ -33,6 +33,64 @@ const SHIFTS: Record<string, string[]> = {
 };
 
 /**
+ * Settings-table keys whose JSON value embeds ISO timestamps that also need to
+ * age along with everything else — these aren't plain DB columns so SHIFTS/
+ * shiftColumnSql can't reach them:
+ *  - heartbeat.checklistState (loop/checklist.ts): { [checklistTaskId]: lastRunAt
+ *    ISO } — dueChecklistTasks gates on now - lastRunAt >= intervalMin, so a
+ *    stale lastRunAt makes an item look freshly-run and silently un-due after
+ *    a timewarp.
+ *  - ingest.lastCheck.<source> (ingest/scheduler.ts sinceKey): a single ISO
+ *    string, the watermark passed to each adapter's fetch(since).
+ */
+const CHECKLIST_STATE_KEY = 'heartbeat.checklistState';
+const LASTCHECK_PREFIX = 'ingest.lastCheck.';
+
+function shiftIso(iso: string, hours: number): string | null {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? new Date(ms - hours * 3_600_000).toISOString() : null;
+}
+
+/** Shift the ISO timestamps embedded in settings JSON values. Returns rows touched. */
+function shiftSettingsTimestamps(db: Database.Database, hours: number): number {
+  const rows = db
+    .prepare('SELECT key, value FROM settings WHERE key = ? OR key LIKE ?')
+    .all(CHECKLIST_STATE_KEY, `${LASTCHECK_PREFIX}%`) as { key: string; value: string }[];
+  let touched = 0;
+  for (const row of rows) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.value);
+    } catch {
+      continue;
+    }
+    let next: unknown;
+    if (row.key === CHECKLIST_STATE_KEY) {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      const shifted: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+      let changed = false;
+      for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v !== 'string') continue;
+        const s = shiftIso(v, hours);
+        if (s === null) continue;
+        shifted[id] = s;
+        changed = true;
+      }
+      if (!changed) continue;
+      next = shifted;
+    } else {
+      if (typeof parsed !== 'string') continue;
+      const s = shiftIso(parsed, hours);
+      if (s === null) continue;
+      next = s;
+    }
+    db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify(next), row.key);
+    touched += 1;
+  }
+  return touched;
+}
+
+/**
  * Shift a column's timestamps by `@shift` while preserving each stored value's
  * original shape:
  *  - date-only values (`YYYY-MM-DD`, e.g. `tasks.due_date`) stay date-only —
@@ -70,6 +128,7 @@ export function applyTimewarp(db: Database.Database, hours: number): number {
         total += r.changes;
       }
     }
+    total += shiftSettingsTimestamps(db, hours);
   });
   tx();
   return total;

@@ -163,6 +163,61 @@ describe('PendingActionQueue — approve/dismiss', () => {
   });
 });
 
+describe('PendingActionQueue — concurrency (in-flight claim)', () => {
+  it('two concurrent approves on the same id call the tool exactly once; the loser gets conflict', async () => {
+    const h = setup();
+    try {
+      const outcome = h.queue.enqueue({ server: 'demo', tool: 'send', args: { to: 'ana', text: 'hi' }, summary: 's' });
+      const id = (outcome as { action: { id: string } }).action.id;
+
+      const [first, second] = await Promise.all([h.queue.approve(id), h.queue.approve(id)]);
+      const results = [first, second];
+
+      expect(results.filter((r) => r.kind === 'ok')).toHaveLength(1);
+      expect(results.filter((r) => r.kind === 'conflict')).toHaveLength(1);
+      const winner = results.find((r) => r.kind === 'ok');
+      if (!winner || winner.kind !== 'ok') throw new Error('unreachable');
+      expect(winner.action.status).toBe('executed');
+
+      // The external tool was invoked exactly once, never twice.
+      expect(h.fixture.calls).toHaveLength(1);
+      expect(h.fixture.calls).toEqual([{ tool: 'send', args: { to: 'ana', text: 'hi' } }]);
+
+      // Only one action.resolved broadcast for this id.
+      expect(
+        h.events.filter((e) => e.type === 'action.resolved' && e.payload.action.id === id),
+      ).toHaveLength(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it('dismiss() during an in-flight approve() is refused; final status is executed', async () => {
+    const h = setup();
+    try {
+      const outcome = h.queue.enqueue({ server: 'demo', tool: 'send', args: { to: 'ana', text: 'hi' }, summary: 's' });
+      const id = (outcome as { action: { id: string } }).action.id;
+
+      const approving = h.queue.approve(id); // claims the id synchronously, then suspends on callTool
+      const dismissed = h.queue.dismiss(id); // runs while the claim is held
+
+      expect(dismissed.kind).toBe('conflict');
+      expect(h.fixture.calls).toHaveLength(0); // dismiss must never itself call the tool
+
+      const resolved = await approving;
+      expect(resolved.kind).toBe('ok');
+      if (resolved.kind !== 'ok') throw new Error('unreachable');
+      expect(resolved.action.status).toBe('executed');
+
+      // The final persisted state is 'executed', not overwritten by dismiss.
+      expect(h.db.getPendingAction(id)?.status).toBe('executed');
+      expect(h.fixture.calls).toHaveLength(1);
+    } finally {
+      await h.cleanup();
+    }
+  });
+});
+
 describe('PendingActionQueue — lazy expiry', () => {
   it('list()/get()/approve() flip pending rows older than 24h to expired and broadcast action.resolved', async () => {
     const h = setup();

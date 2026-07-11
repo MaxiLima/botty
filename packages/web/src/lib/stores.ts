@@ -105,6 +105,10 @@ async function refetchPendingActions(): Promise<void> {
 
 let openCount: number | null = null;
 const countSubs = new Set<() => void>();
+/** Bumped by any fresher open-count source (a `tasks.updated` snapshot, or a
+ * newer refetch) so a slower in-flight `refetchOpenCount` can detect it was
+ * superseded and skip applying its now-stale result. */
+let openCountToken = 0;
 
 function setOpenCount(n: number): void {
   if (openCount === n) return;
@@ -123,8 +127,12 @@ export function useOpenTaskCount(): number | null {
 }
 
 async function refetchOpenCount(): Promise<void> {
+  const token = ++openCountToken;
   try {
     const { tasks } = await api.tasks('open');
+    // A newer tasks.updated snapshot (or a newer refetch) landed while this
+    // request was in flight — its result is stale, don't clobber the newer one.
+    if (token !== openCountToken) return;
     setOpenCount(tasks.length);
   } catch {
     // agent unreachable — leave stale count
@@ -165,6 +173,9 @@ export function initStores(): void {
   });
 
   onWsEvent('tasks.updated', (p) => {
+    // This snapshot is authoritative as of now — invalidate any in-flight
+    // refetchOpenCount so its (potentially older) result can't overwrite it.
+    openCountToken++;
     setOpenCount(p.tasks.filter((t) => t.status === 'open').length);
   });
 

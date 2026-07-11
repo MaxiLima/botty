@@ -88,5 +88,5 @@ export function discoverActor(db: Db, actor: SourceEvent['actor']): Person | und
 
 /** WS `tasks.updated` after any funnel/structured task write. */
 export function broadcastTasksUpdated(ctx: Pick<FunnelCtx, 'db' | 'bus'>): void {
-  ctx.bus.broadcast({ type: 'tasks.updated', payload: { tasks: ctx.db.listTasks() } });
+  ctx.bus.broadcast({ type: 'tasks.updated', payload: { tasks: ctx.db.listTasks('open') } });
 }

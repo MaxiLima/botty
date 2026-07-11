@@ -34,10 +34,9 @@ judgment always skips), `BOTTY_SIM_URL`.
 ## Testing the proactive loop — timewarp
 
 Proactive behavior is time-gated (min-age, cooldowns, staleness, snooze). Don't wait —
-shift the DB clock: `npm run timewarp -w @botty/agent -- --hours 6` (or `--days N`).
-**Stop the agent first** — it holds a WAL lock. Replay recorded AI decisions with
-`npm run replay -w @botty/agent -- --kind judgment --last 20` (must use `-w @botty/agent`;
-the root package.json has no passthrough script). Recipes: `docs/TESTING.md`.
+shift the DB clock: `npm run timewarp -- --hours 6` (or `--days N`). **Stop the agent
+first** — it holds a WAL lock. Replay recorded AI decisions with
+`npm run replay -- --kind judgment --last 20`. Recipes: `docs/TESTING.md`.
 
 ## Contracts and conventions
 
@@ -48,8 +47,9 @@ the root package.json has no passthrough script). Recipes: `docs/TESTING.md`.
 - Every AI decision (funnel classification, extraction, tick judgment) is recorded in
   `ai_decisions` and browsable in the Inspector — check there before guessing why the
   agent did something.
-- Config is markdown in `~/.botty/config/` (`persona.md`, `team.md`, `heartbeat.md`),
-  hot-reloaded — no restart needed to test config changes.
+- Config lives in `~/.botty/config/`: markdown (`persona.md`, `team.md`, `heartbeat.md`) plus
+  `mcp.json` (external MCP servers/tools + the consent gate for `action`-mode tools — see
+  `docs/specs/mcp.md`). All four are hot-reloaded — no restart needed to test config changes.
 
 ## Doc map
 

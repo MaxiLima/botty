@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isWithinWorkingHours } from '../../src/loop/time.js';
+import { isWithinWorkingHours, msUntilNextTime } from '../../src/loop/time.js';
 
 // Local-time ISO strings (no Z) so results don't depend on the machine's TZ.
 // 2026-07-01 = Wednesday · 2026-07-04 = Saturday · 2026-07-05 = Sunday.
@@ -58,4 +58,28 @@ describe('isWithinWorkingHours', () => {
       }),
     ).toBe(false);
   });
+});
+
+describe('msUntilNextTime', () => {
+  it('returns ms until the next occurrence today when later the same day', () => {
+    const from = new Date('2026-07-01T08:00:00');
+    expect(msUntilNextTime(from, '08:30')).toBe(30 * 60_000);
+  });
+
+  it('rolls over to tomorrow when the time already passed (or is now)', () => {
+    const from = new Date('2026-07-01T08:00:00');
+    expect(msUntilNextTime(from, '08:00')).toBe(24 * 60 * 60_000); // "strictly after"
+    expect(msUntilNextTime(from, '07:59')).toBe((23 * 60 + 59) * 60_000);
+  });
+
+  // Regression: an unparseable/out-of-range time used to fall back to
+  // `parseHHMM(hhmm) ?? 0` (midnight) via the nullish-coalescing default,
+  // silently arming a real timer for 00:00 instead of not arming at all.
+  it.each(['25:00', '09:75', 'nope', '', '24:00'])(
+    'returns null for garbage input "%s" instead of arming for midnight',
+    (bad) => {
+      const from = new Date('2026-07-01T08:00:00');
+      expect(msUntilNextTime(from, bad)).toBeNull();
+    },
+  );
 });

@@ -106,11 +106,14 @@ export async function runTick(
     // 4. gather candidates (DUE_SOON / NEVER_SURFACED / STALE / MEETING_PREP)
     // — thresholds come from heartbeat.md — plus due recurring checklist items
     // ('## Tasks'; per-item lastRunAt lives in settings, no LLM cost to check)
-    // and due inferred commitments (loop/commitments.ts). Stale commitments
-    // (due more than 24h ago, never delivered) are swept before gathering.
+    // and due inferred commitments (loop/commitments.ts). The stale-commitment
+    // sweep (due more than 24h ago, never delivered) runs at the END of the
+    // tick (step 10.5), AFTER this tick has had a chance to gather/deliver its
+    // own due commitments — ticks are gated to working hours, so a commitment
+    // due over a weekend must survive to Monday's first tick to ever be seen;
+    // sweeping before gathering would silently expire it first.
     const candidates = gatherCandidates(db, now, hb);
     const dueChecklist = dueChecklistTasks(hb.checklistTasks, loadChecklistState(db), now);
-    db.expireStaleCommitments(now, COMMITMENT_STALE_GRACE_HOURS);
     const dueCommitments = eligibleCommitments(db, now, {
       minAgeMin: hb.commitmentMinAgeMin,
       maxPerDay: hb.commitmentsMaxPerDay,
@@ -252,6 +255,14 @@ export async function runTick(
     // Judgment succeeded: every due checklist item was processed (notified or
     // deliberately skipped) — advance lastRunAt for all of them.
     markChecklistRun(db, hb.checklistTasks, dueChecklist, now);
+
+    // 10.5 stale-commitment sweep — AFTER this tick's own due commitments were
+    // gathered and (possibly) delivered above, so a commitment first seen by
+    // this tick always gets its chance before it can be swept as stale.
+    // markCommitmentDelivered already flipped delivered ones out of status
+    // 'open', so this only expires what's still open and past the grace
+    // period — including due commitments this tick judged worth skipping.
+    db.expireStaleCommitments(now, COMMITMENT_STALE_GRACE_HOURS);
 
     // 11. record + broadcast
     return finish({

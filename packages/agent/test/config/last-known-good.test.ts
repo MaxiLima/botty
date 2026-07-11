@@ -85,6 +85,28 @@ describe('ConfigManager — heartbeat last-known-good', () => {
     }
   });
 
+  it('an out-of-range HH:MM (e.g. working_hours: 08:00-25:00) is rejected, not silently accepted', () => {
+    // Regression: parseHeartbeat used to validate working_hours with a
+    // format-only regex, so "25:00" and "09:75" produced zero warnings and
+    // were adopted as last-known-good — which then disabled the hard
+    // working-hours gate at runtime (loop/time.ts parseHHMM returns null for
+    // them, and isWithinWorkingHours treats a null bound as "always within").
+    const f = makeFixture();
+    try {
+      const config = createConfig(f.env, f.db, f.bus);
+      config.save('heartbeat', GOOD_33);
+      expect(config.heartbeat().workingHours).toEqual(HEARTBEAT_DEFAULTS.workingHours);
+
+      const { warnings } = config.save('heartbeat', '## Schedule\ntick_interval_min: 33\nworking_hours: 08:00-25:00\n');
+      expect(warnings.some((w) => w.includes('working_hours'))).toBe(true);
+      // Last-known-good (the default working_hours from GOOD_33) keeps being served.
+      expect(config.heartbeat().workingHours).toEqual(HEARTBEAT_DEFAULTS.workingHours);
+      expect(config.heartbeatIssues()).not.toBeNull();
+    } finally {
+      f.cleanup();
+    }
+  });
+
   it('boot with a broken file: serves per-field defaults and exposes the warnings', () => {
     const f = makeFixture();
     try {

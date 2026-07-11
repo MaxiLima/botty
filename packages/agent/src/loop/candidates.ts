@@ -73,6 +73,10 @@ export function meetingPrepTasks(
           },
           'loop',
         ) ?? db.getTaskBySourceRef('gcal', sourceRef);
+    } else if (task.status === 'open' && task.dueDate !== event.startAt) {
+      // The meeting moved since the prep task was created — keep the reminder
+      // in sync with the calendar rather than nagging about the stale time.
+      task = db.updateTask(task.id, { dueDate: event.startAt }, 'loop');
     }
     if (task && task.status === 'open') out.push(task);
   }

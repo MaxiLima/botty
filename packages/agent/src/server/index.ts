@@ -8,7 +8,7 @@ import type { AgentContext } from '../context.js';
 import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { HttpError, zodDetail } from './errors.js';
-import { isLocalHostHeader } from './guards.js';
+import { isLocalHostHeader, isLocalOrigin } from './guards.js';
 import { buildApiRouter, AGENT_VERSION } from './routes.js';
 import { attachWsHub, type WsHub } from './ws.js';
 
@@ -42,6 +42,18 @@ export function createServer(ctx: AgentContext, deps: ServerDeps): AgentServer {
   app.use((req, res, next) => {
     if (!isLocalHostHeader(req.headers.host)) {
       res.status(403).json({ error: 'forbidden', detail: 'non-local Host header' });
+      return;
+    }
+    next();
+  });
+  // Cross-origin-fetch guard: like the WS handshake (ws.ts), reject requests
+  // whose Origin header is present but not local — a malicious webpage's
+  // fetch() would otherwise hit this loopback-bound, unauthenticated API with
+  // the browser's ambient credentials. Non-browser clients (TUI, curl) send
+  // no Origin at all and are unaffected; isLocalOrigin() treats that as local.
+  app.use((req, res, next) => {
+    if (!isLocalOrigin(req.headers.origin)) {
+      res.status(403).json({ error: 'forbidden', detail: 'non-local Origin header' });
       return;
     }
     next();

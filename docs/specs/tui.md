@@ -90,6 +90,7 @@ command). ↑↓ move, Tab completes, Enter runs. Passing an argument to a no-ar
 | `/people [name]` | roster, or one person: weight/tier, notes, open tasks, recent interactions |
 | `/inspector` | recent AI decisions (8), ticks (5), source checks (5) — summaries only |
 | `/config [persona\|team\|heartbeat]` | view a config file (default persona) |
+| `/costs` | LLM spend report (`GET /api/costs`): totals + byCategory/byModel breakdown |
 | `/health` | agent status, version, mode, db path |
 | `/new` | `POST /api/chat/seal` — next message starts fresh |
 | `/quit` | exit |

@@ -54,6 +54,28 @@ describe('findNearDuplicateTask (ISSUE 2 — cross-source near-duplicate consoli
     expect(match).toBeUndefined();
   });
 
+  it('does NOT treat a shared bare year as a distinctive identifier (two different Tier-1 asks, ~0.2 word overlap)', () => {
+    const db = new Db(':memory:');
+    db.insertTask({
+      description: 'Renew the lease in 2026',
+      rawText: 'Renew the lease in 2026',
+      source: 'gmail',
+      sourceRef: 'G-1',
+    });
+
+    // Shares only the bare number "2026" (a year, not an identifier) and
+    // nothing else — word overlap is well below the strict word-only floor
+    // (0.6). Before the fix, the shared "2026" was treated as a distinctive
+    // token, which dropped the confirm bar to 0.15 and wrongly deduped two
+    // completely unrelated asks.
+    const match = findNearDuplicateTask(db, {
+      description: 'Book the flights for 2026',
+      rawText: 'Book the flights for 2026',
+      source: 'slack',
+    });
+    expect(match).toBeUndefined();
+  });
+
   it('falls back to a high word-overlap bar when neither text carries an explicit id (cross-source paraphrase)', () => {
     const db = new Db(':memory:');
     const original = db.insertTask({

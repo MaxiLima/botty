@@ -149,10 +149,20 @@ function PersonDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError(null);
     api
       .person(id)
-      .then(setData)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+      .then((d) => {
+        if (!cancelled) setData(d);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   const p = data?.person;

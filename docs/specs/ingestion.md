@@ -78,8 +78,13 @@ Per event, in order — cheap kills first:
    `{ worthExtracting: boolean, confidence: number, reason: string }`. False ⇒ `interactions`
    row, stop (`CLASSIFIED_OUT`). LLM failure ⇒ degrade to extracting (heuristics already passed).
 5. **Extractor** (`llm.structured`, task `extraction`): schema
-   `{ tasks: [{description, requesterName?, dueDate?, priority?}], decisions: [{description,
-   rationale?}], people: [{name, slackHandle?, email?}] }`. Persist order: people (upsert by
+   `{ tasks: [{description, requesterName?, dueDate?, priority?, owner?}], decisions:
+   [{description, rationale?}], people: [{name, slackHandle?, email?}] }`. `owner` (`'me'|'them'`,
+   optional — defaults to `'me'` at persist time in `ingest/funnel.ts`'s `persistExtraction`) tells
+   apart the user's own to-do from the *other* person's stated promise to the user
+   (e.g. "I'll send you the latency doc tomorrow" ⇒ `owner: 'them'`, a "waiting on `<them>`"
+   reminder, not a task instructing the user to send the doc — see migration 006 in
+   `specs/data-model.md`). Persist order: people (upsert by
    name_lower) → tasks (priority 1 if requester Tier 1; `source_ref` = threadRef||externalId;
    UNIQUE dedup) → decisions. Also insert an `interactions` row for the actor. Outcome
    `EXTRACTED`.
@@ -109,3 +114,23 @@ Also: index extracted tasks/decisions and interaction snippets into `memory_fts`
 `POST /api/chat/message` content is normal chat; the chat system prompt instructs the model to
 call a `capture_task` tool (SDK custom tool) when the user asks to track something — the tool
 handler writes the task directly (source `chat`). Keep this minimal in v1.
+
+## Chat tools
+
+Location: `packages/agent/src/chat/tools.ts` (`createChatTools`). Four model-callable SDK custom
+tools available on every chat turn (external MCP tools from `mcp.json` are additional and
+per-turn-derived — see `specs/mcp.md`). Each is a never-throwing `ChatToolSpec`: a bad call or a
+missing id comes back as `{ error }` data rather than killing the turn; the SDK wrapping
+(`tool()` + `createSdkMcpServer()`) lives in `llm/sdk.ts`, and the mock LLM invokes `execute()`
+directly.
+
+| Tool | Purpose |
+|---|---|
+| `capture_task` | Create a tracked task from the conversation (source `chat`, `source_ref` a fresh `chat:<nanoid>` so dedup never applies). Mirrors the funnel's requester resolution: a known name → that person, a new name → `upsertDiscoveredPerson`. |
+| `task_action` | Act on an existing task by id: `done`\|`snooze`\|`dismiss`\|`reopen`\|`priority` — mirrors the switch in `POST /api/tasks/:id/action` (`changedBy: 'chat'`). `snoozeUntil` (exact wall-clock instant, ISO with offset) takes precedence over `snoozeDays` for "until tomorrow 9am"-style requests. |
+| `memory_search` | Full-text search over tasks/decisions/interactions/chat via `Memory.search` — recall past work or find a task id. |
+| `session_search` | Recall past chat conversations: `mode: 'search'` (FTS over old turns), `'recent'` (list sessions + summaries), `'browse'` (page through one session's turns by offset/limit). |
+
+Every task-board write (`capture_task`, `task_action`) broadcasts the same full open-board
+`tasks.updated` snapshot that `POST /api/tasks/:id/action` does (`db.listTasks('open')`) — chat
+writes and REST writes stay indistinguishable to WS consumers.

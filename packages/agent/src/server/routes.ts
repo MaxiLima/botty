@@ -28,6 +28,19 @@ export const AGENT_VERSION = '0.1.0';
 
 const SettingsPatchSchema = z.object({ patch: z.record(z.string(), z.unknown()) });
 
+// User-settable settings keys. Everything else in the `settings` table is
+// internal bookkeeping (ingest.lastCheck.*, heartbeat.checklistState, …)
+// written only by the agent itself — PUT /api/settings must not let a
+// caller clobber it. Extend this list only for keys a client is actually
+// meant to write (see docs/BACKLOG.md: llm.models/llm.pricing today).
+const SETTABLE_SETTINGS_KEYS = new Set(['llm.models', 'llm.pricing']);
+
+function assertSettableSettingsKey(key: string): void {
+  if (!SETTABLE_SETTINGS_KEYS.has(key)) {
+    throw badRequest(`setting "${key}" is not user-settable`);
+  }
+}
+
 const DAY_MS = 86_400_000;
 
 // ---------- enrichment helpers ----------
@@ -96,7 +109,8 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
     wrap((req, res) => {
       const limit = queryInt(req.query.limit, 'limit');
       const before = queryStr(req.query.before);
-      res.json({ turns: db.chatHistory({ limit, before }), sessions: db.listSessions() });
+      const beforeId = queryStr(req.query.beforeId);
+      res.json({ turns: db.chatHistory({ limit, before, beforeId }), sessions: db.listSessions() });
     }),
   );
 
@@ -274,6 +288,7 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
           kind: queryStr(req.query.kind),
           limit: queryInt(req.query.limit, 'limit'),
           before: queryStr(req.query.before),
+          beforeId: queryStr(req.query.beforeId),
         }),
       });
     }),
@@ -381,6 +396,7 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
       if (outcome.kind === 'not_pending') {
         throw conflict(`action ${id} is not pending (status: ${outcome.action.status})`);
       }
+      if (outcome.kind === 'conflict') throw conflict(outcome.detail);
       res.json({ action: outcome.action });
     }),
   );
@@ -394,6 +410,7 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
       if (outcome.kind === 'not_pending') {
         throw conflict(`action ${id} is not pending (status: ${outcome.action.status})`);
       }
+      if (outcome.kind === 'conflict') throw conflict(outcome.detail);
       res.json({ action: outcome.action });
     }),
   );
@@ -485,6 +502,7 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
     '/settings',
     wrap((req, res) => {
       const { patch } = parseBody(SettingsPatchSchema, req.body);
+      for (const key of Object.keys(patch)) assertSettableSettingsKey(key);
       for (const [key, value] of Object.entries(patch)) db.setSetting(key, value);
       res.json({ settings: db.allSettings() });
     }),

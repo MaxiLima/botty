@@ -8,7 +8,8 @@ DB at `${BOTTY_DATA_DIR:-~/.botty}/data/botty.db`. `better-sqlite3`, `journal_mo
 `packages/shared/migrations/NNN_name.sql`, applied in order, tracked in `schema_migrations
 (version INTEGER PRIMARY KEY, applied_at TEXT)`. The Db class in `@botty/agent` runs pending
 migrations on open. Migration files are plain SQL, one statement set per file. Current set:
-001 (tables below), 002 (FTS5 index), 003 (FTS rebuild with `kind`/`ref_id` UNINDEXED).
+001 (tables below), 002 (FTS5 index), 003 (FTS rebuild with `kind`/`ref_id` UNINDEXED),
+004 (`commitments` table), 005 (`pending_actions` table), 006 (`tasks.owner` column).
 
 ## Tables (migration 001)
 
@@ -44,6 +45,10 @@ CREATE TABLE tasks (
   source_ref TEXT,                                -- stable upstream id (thread ts, msg id, issue key)
   status TEXT NOT NULL DEFAULT 'open',            -- open|snoozed|done|cancelled|merged|archived
   priority INTEGER NOT NULL DEFAULT 2,            -- 1 HIGH, 2 NORMAL, 3 LOW
+  owner TEXT NOT NULL DEFAULT 'me',               -- me|them (migration 006) — 'me' = the user must
+                                                   -- act; 'them' = the other person's own stated
+                                                   -- promise TO the user ("waiting on <them>"), not
+                                                   -- a to-do. Set by the extractor (specs/ingestion.md)
   requested_by TEXT REFERENCES people(id),
   project_id TEXT REFERENCES projects(id),
   due_date TEXT,
@@ -182,6 +187,50 @@ CREATE TABLE settings (
   value TEXT NOT NULL                              -- JSON
 );
 ```
+
+## Commitments, pending actions, task owner (migrations 004–006)
+
+```sql
+CREATE TABLE commitments (                         -- inferred short-lived follow-ups (chat)
+  id TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  due_at TEXT NOT NULL,
+  source_turn_id TEXT,                              -- FK-ish to chat_turns.id, unenforced
+  created_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',              -- open|delivered|expired|dismissed
+  delivered_at TEXT
+);
+CREATE INDEX idx_commitments_status_due ON commitments(status, due_at);
+
+CREATE TABLE pending_actions (                      -- consent-gated external MCP tool calls
+  id TEXT PRIMARY KEY,
+  server TEXT NOT NULL,                             -- mcp.json server key, e.g. 'slack'
+  tool TEXT NOT NULL,                                -- tool name on that server
+  args_json TEXT NOT NULL,                          -- JSON-encoded args as the model proposed them
+  summary TEXT NOT NULL,                            -- one-line human-readable approval-card text
+  status TEXT NOT NULL DEFAULT 'pending',           -- pending|executed|failed|dismissed|expired
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  result_json TEXT,                                 -- tool result (executed) or error detail (failed)
+  source_turn_id TEXT                                -- chat turn the model proposed this from, if known
+);
+CREATE INDEX idx_pending_actions_status_created ON pending_actions(status, created_at);
+
+ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'me';
+```
+
+`commitments` (migration 004) is short-lived, chat-inferred operational state — NOT a task, NOT
+durable memory. `chat/commitments.ts` extracts it from a chat turn; `loop/commitments.ts` delivers
+it through the tick judgment when due and expires it 24h past `due_at` if never delivered. See
+`specs/loop.md`.
+
+`pending_actions` (migration 005) is the approval queue for `mode: action` external MCP tools
+(mcp.json). The chat model can only enqueue a row here; `mcp/pending.ts` is the sole path that
+ever calls the tool, on `approve`. See `specs/mcp.md`.
+
+`tasks.owner` (migration 006) fixes extraction wrongly creating tasks owned by the user out of the
+*other* person's own stated commitment ("I'll send you the doc tomorrow" is their promise, not the
+user's to-do). See `specs/ingestion.md`.
 
 ## FTS5 (migrations 002 + 003)
 

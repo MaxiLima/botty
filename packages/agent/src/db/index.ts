@@ -816,15 +816,28 @@ export class Db {
     return rows.map((r) => this.getChatTurn(r.id)!);
   }
 
-  /** Newest-last window over the single continuous chat thread. */
-  chatHistory(opts: { limit?: number; before?: string } = {}): ChatTurn[] {
+  /**
+   * Newest-last window over the single continuous chat thread.
+   *
+   * `beforeId` (the id of the boundary row from the previous page) turns the
+   * cursor into a composite (created_at, id) comparison, so rows that tie on
+   * `before`'s millisecond and straddle the LIMIT cut aren't skipped. Without
+   * it, falls back to the plain `created_at < ?` cursor for compatibility.
+   */
+  chatHistory(opts: { limit?: number; before?: string; beforeId?: string } = {}): ChatTurn[] {
     const limit = opts.limit ?? 50;
     const rows = (
-      opts.before
+      opts.before && opts.beforeId
         ? this.raw
-            .prepare('SELECT id FROM chat_turns WHERE created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?')
-            .all(opts.before, limit)
-        : this.raw.prepare('SELECT id FROM chat_turns ORDER BY created_at DESC, id DESC LIMIT ?').all(limit)
+            .prepare(
+              'SELECT id FROM chat_turns WHERE created_at < ? OR (created_at = ? AND id < ?) ORDER BY created_at DESC, id DESC LIMIT ?',
+            )
+            .all(opts.before, opts.before, opts.beforeId, limit)
+        : opts.before
+          ? this.raw
+              .prepare('SELECT id FROM chat_turns WHERE created_at < ? ORDER BY created_at DESC, id DESC LIMIT ?')
+              .all(opts.before, limit)
+          : this.raw.prepare('SELECT id FROM chat_turns ORDER BY created_at DESC, id DESC LIMIT ?').all(limit)
     ) as { id: string }[];
     return rows.reverse().map((r) => this.getChatTurn(r.id)!);
   }
@@ -1049,7 +1062,13 @@ export class Db {
     return row ? mapRow<AiDecision>(row) : undefined;
   }
 
-  listAiDecisions(opts: { kind?: string; limit?: number; before?: string } = {}): AiDecision[] {
+  /**
+   * `beforeId` (the id of the boundary row from the previous page) turns the
+   * cursor into a composite (created_at, id) comparison, so rows that tie on
+   * `before`'s millisecond and straddle the LIMIT cut aren't skipped. Without
+   * it, falls back to the plain `created_at < ?` cursor for compatibility.
+   */
+  listAiDecisions(opts: { kind?: string; limit?: number; before?: string; beforeId?: string } = {}): AiDecision[] {
     const limit = opts.limit ?? 50;
     const where: string[] = [];
     const params: unknown[] = [];
@@ -1057,11 +1076,14 @@ export class Db {
       where.push('kind=?');
       params.push(opts.kind);
     }
-    if (opts.before) {
+    if (opts.before && opts.beforeId) {
+      where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+      params.push(opts.before, opts.before, opts.beforeId);
+    } else if (opts.before) {
       where.push('created_at < ?');
       params.push(opts.before);
     }
-    const sql = `SELECT * FROM ai_decisions ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT ?`;
+    const sql = `SELECT * FROM ai_decisions ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC LIMIT ?`;
     return mapRows<AiDecision>(this.raw.prepare(sql).all(...params, limit));
   }
 

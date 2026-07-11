@@ -203,7 +203,9 @@ function TicksTab() {
       .then((d) => {
         if (!cancelled) setDetail(d);
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
     return () => {
       cancelled = true;
     };
@@ -308,7 +310,7 @@ function DecisionsTab() {
     if (!last || loadingMore) return;
     setLoadingMore(true);
     try {
-      const res = await api.decisions({ kind: kind || undefined, limit: 50, before: last.createdAt });
+      const res = await api.decisions({ kind: kind || undefined, limit: 50, before: last.createdAt, beforeId: last.id });
       setDecisions((prev) => {
         const known = new Set(prev.map((d) => d.id));
         return [...prev, ...res.decisions.filter((d) => !known.has(d.id))];

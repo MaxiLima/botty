@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProactiveLogRow, Task, TaskHistory } from '@botty/shared';
 import { api, type TaskActionBody } from '../lib/api.js';
 import { daysUntil, priorityLabel, shortDate, shortDateTime, timeAgo } from '../lib/format.js';
@@ -128,16 +128,28 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [dismissReason, setDismissReason] = useState<string | null>(null);
 
+  // `cancelled` guards both the initial id-keyed load and any reload triggered
+  // by an action (e.g. done/dismiss) — a fast A→B drawer switch must not let
+  // A's in-flight response land after B's id effect has already taken over.
+  const cancelledRef = useRef(false);
+
   const load = useCallback(async () => {
     try {
-      setData(await api.task(id));
+      const res = await api.task(id);
+      if (!cancelledRef.current) setData(res);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!cancelledRef.current) setError(err instanceof Error ? err.message : String(err));
     }
   }, [id]);
 
   useEffect(() => {
+    cancelledRef.current = false;
+    setData(null);
+    setError(null);
     void load();
+    return () => {
+      cancelledRef.current = true;
+    };
   }, [load]);
 
   const act = async (body: TaskActionBody) => {
@@ -148,9 +160,9 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
       setDismissReason(null);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!cancelledRef.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (!cancelledRef.current) setBusy(false);
     }
   };
 
@@ -236,7 +248,7 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
                 autoFocus
                 onChange={(e) => setDismissReason(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') void act({ action: 'dismiss', reason: dismissReason.trim() || undefined });
+                  if (e.key === 'Enter' && !busy) void act({ action: 'dismiss', reason: dismissReason.trim() || undefined });
                 }}
               />
               <button

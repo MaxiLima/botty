@@ -13,10 +13,20 @@ function byCreatedAt(a: PendingAction, b: PendingAction): number {
  * about (including cards resolved locally via WS or a POST response) is
  * kept even if the fetch — pending-only — no longer includes it, so a
  * resolved card never vanishes from the session on reconnect.
+ *
+ * Race guard: the fetch and a concurrent `action.resolved` WS event (or a
+ * direct POST response) can land in either order. If a local entry has
+ * already moved to a terminal status, a fetched 'pending' row for the same
+ * id is stale — skip it so a resolved card never reverts to a phantom
+ * pending badge (which would also make a follow-up approve/dismiss 409).
  */
 export function hydratePendingActions(current: PendingAction[], fetched: PendingAction[]): PendingAction[] {
   const byId = new Map(current.map((a) => [a.id, a]));
-  for (const a of fetched) byId.set(a.id, a);
+  for (const a of fetched) {
+    const existing = byId.get(a.id);
+    if (a.status === 'pending' && existing && existing.status !== 'pending') continue;
+    byId.set(a.id, a);
+  }
   return [...byId.values()].sort(byCreatedAt);
 }
 

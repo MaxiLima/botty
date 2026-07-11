@@ -34,6 +34,11 @@ import '../styles/chat.css';
 
 const PAGE_SIZE = 60;
 const QUOTE_PREVIEW_CHARS = 120;
+/** Foreign-turn adoption only needs the recent tail, not a full page. */
+const TAIL_LIMIT = 20;
+/** Coalesce back-to-back adoption triggers (chunk/thinking/toolUse for a burst
+ * of foreign turns) into a single history refetch. */
+const TAIL_DEBOUNCE_MS = 150;
 
 interface PendingTurn {
   turnId: string;
@@ -92,6 +97,12 @@ export function ChatPage() {
   /** Mirror for event handlers that need the current pending without a stale closure. */
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
+  /** True while our own POST /chat/message is in flight — its own local turn is
+   * already optimistic, so stream events for it don't need a tail refetch. */
+  const sendingRef = useRef(false);
+  /** Last turnId we already triggered a tail refetch for — avoids a refetch per chunk. */
+  const adoptedRef = useRef<string | null>(null);
+  const tailDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -103,12 +114,63 @@ export function ChatPage() {
     }
   }, []);
 
+  // Pull in the tail without disturbing any earlier pages the user has scrolled
+  // to load — merges only turns we don't already know about (dedupe by id).
+  const refreshTail = useCallback(async () => {
+    try {
+      const res = await api.chatHistory(TAIL_LIMIT);
+      setTurns((prev) => {
+        const known = new Set(prev.map((t) => t.id));
+        const fresh = res.turns.filter((t) => !known.has(t.id));
+        return fresh.length > 0 ? [...prev, ...fresh] : prev;
+      });
+    } catch {
+      // best-effort — the stream events already carry the reply; a failed
+      // adoption refetch just means the triggering user turn stays missing.
+    }
+  }, []);
+
+  const scheduleTailRefetch = useCallback(() => {
+    if (tailDebounceRef.current) return;
+    tailDebounceRef.current = setTimeout(() => {
+      tailDebounceRef.current = null;
+      void refreshTail();
+    }, TAIL_DEBOUNCE_MS);
+  }, [refreshTail]);
+
+  /** A stream event for a turn we didn't start — another client (e.g. the TUI)
+   * sent a message. Its user turn never landed here optimistically, so refetch
+   * the tail to pull it in; skip if it's our own in-flight send or already known. */
+  const adopt = useCallback(
+    (turnId: string) => {
+      if (adoptedRef.current === turnId) return;
+      if (sendingRef.current) return;
+      if (pendingRef.current?.turnId === turnId) return;
+      if (finishedRef.current.has(turnId)) return;
+      adoptedRef.current = turnId;
+      scheduleTailRefetch();
+    },
+    [scheduleTailRefetch],
+  );
+
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
 
+  useEffect(
+    () => () => {
+      if (tailDebounceRef.current) clearTimeout(tailDebounceRef.current);
+    },
+    [],
+  );
+
   useOnReconnect(() => {
     setPending(null);
+    adoptedRef.current = null;
+    if (tailDebounceRef.current) {
+      clearTimeout(tailDebounceRef.current);
+      tailDebounceRef.current = null;
+    }
     void loadHistory();
   });
 
@@ -121,6 +183,7 @@ export function ChatPage() {
   // another client entirely) — with no pending yet, adopt the turn instead of
   // dropping the chunk, unless it already finished.
   useWsEvent('chat.chunk', (p) => {
+    adopt(p.turnId);
     setPending((prev) => {
       if (prev) return prev.turnId === p.turnId ? { ...prev, text: prev.text + p.delta, thinking: false } : prev;
       if (finishedRef.current.has(p.turnId)) return prev;
@@ -128,6 +191,7 @@ export function ChatPage() {
     });
   });
   useWsEvent('chat.thinking', (p) => {
+    adopt(p.turnId);
     setPending((prev) => {
       if (prev) return prev.turnId === p.turnId ? { ...prev, thinking: p.on } : prev;
       if (finishedRef.current.has(p.turnId)) return prev;
@@ -135,6 +199,7 @@ export function ChatPage() {
     });
   });
   useWsEvent('chat.toolUse', (p) => {
+    adopt(p.turnId);
     const tool = p.summary ? `${p.name} — ${p.summary}` : p.name;
     setPending((prev) => {
       if (prev) return prev.turnId === p.turnId ? { ...prev, tool } : prev;
@@ -217,7 +282,7 @@ export function ChatPage() {
     if (!oldest || loadingEarlier) return;
     setLoadingEarlier(true);
     try {
-      const res = await api.chatHistory(PAGE_SIZE, oldest.createdAt);
+      const res = await api.chatHistory(PAGE_SIZE, oldest.createdAt, oldest.id);
       setHasMore(res.turns.length >= PAGE_SIZE);
       setTurns((prev) => {
         const known = new Set(prev.map((t) => t.id));
@@ -313,6 +378,7 @@ export function ChatPage() {
     stickToBottom.current = true;
     // Only ids finishing during this send's POST window matter to the guard.
     finishedRef.current.clear();
+    sendingRef.current = true;
     try {
       const { turnId } = await api.chatSend({
         text: outText,
@@ -334,6 +400,8 @@ export function ChatPage() {
       setImages(attachments);
       setQuote(quoted);
       setTurns((prev) => prev.filter((t) => t.id !== localTurn.id));
+    } finally {
+      sendingRef.current = false;
     }
   };
 
@@ -681,7 +749,7 @@ function NudgeRow({ n, onReply }: { n: NotificationItem; onReply: (q: QuoteState
               autoFocus
               onChange={(e) => setReason(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') confirmDismiss();
+                if (e.key === 'Enter' && !busy) confirmDismiss();
                 if (e.key === 'Escape') setDismissing(false);
               }}
             />

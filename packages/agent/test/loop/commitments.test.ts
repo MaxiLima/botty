@@ -266,7 +266,12 @@ describe('runTick — commitments', () => {
     expect(db.getCommitment(c.id)!.status).toBe('open');
   });
 
-  it('a stale commitment (due long ago, never delivered) is expired before gathering', async () => {
+  it('a stale commitment (due long ago) still gets one shot at judgment before it is expired', async () => {
+    // Reordering regression guard: the stale-commitment sweep runs at the END
+    // of the tick, AFTER this tick's own due commitments are gathered — so a
+    // commitment due long ago (e.g. a weekend commitment first seen by
+    // Monday's first tick) reaches judgment instead of being silently wiped
+    // out before gathering ever sees it.
     const now = '2026-07-09T12:00:00.000Z';
     const stale = insertCommitmentAt(db, {
       description: 'ancient',
@@ -275,8 +280,36 @@ describe('runTick — commitments', () => {
     });
     const { deps, structured } = makeDeps(db, bus, heartbeat(), skipAll);
     await runTick(deps, { trigger: 'run-now', now });
+    expect(structured).toHaveBeenCalledTimes(1); // it reached judgment this tick
+    const req = structured.mock.calls[0]![0] as StructuredRequest<unknown>;
+    expect(req.prompt).toContain(commitmentCandidateId(stale));
+    // judgment (skipAll) didn't deliver it, so the end-of-tick sweep expires it.
     expect(db.getCommitment(stale.id)!.status).toBe('expired');
-    expect(structured).not.toHaveBeenCalled(); // nothing else due ⇒ zero-cost floor still holds
     expect(COMMITMENT_STALE_GRACE_HOURS).toBe(24);
+  });
+
+  it('a commitment due over the weekend is gathered as due (not expired) on Monday\'s first tick', async () => {
+    // 2026-07-13 is a Monday. Simulates the exact scenario from the bug: a
+    // commitment due Saturday, never seen because ticks are gated to working
+    // hours Mon-Fri, must survive to be delivered on Monday's first tick
+    // rather than being expired before gathering ever runs.
+    const saturdayDue = '2026-07-11T10:00:00.000Z'; // Saturday
+    const mondayFirstTick = '2026-07-13T08:00:00.000Z'; // Monday 08:00
+    const c = insertCommitmentAt(db, {
+      description: 'weekend follow-up',
+      dueAt: saturdayDue,
+      createdAt: '2026-07-10T09:00:00.000Z', // Friday, well past the min-age guard
+    });
+    const judgment: JudgmentOutput = {
+      tickReasoning: 'deliver it',
+      actions: [
+        { type: 'notify', taskId: commitmentCandidateId(c), score: 8, message: 'Weekend follow-up', reasoning: 'due' },
+      ],
+      skipped: [],
+    };
+    const { deps, structured } = makeDeps(db, bus, heartbeat(), judgment);
+    await runTick(deps, { trigger: 'run-now', now: mondayFirstTick });
+    expect(structured).toHaveBeenCalledTimes(1);
+    expect(db.getCommitment(c.id)!.status).toBe('delivered');
   });
 });

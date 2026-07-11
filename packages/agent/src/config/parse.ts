@@ -179,6 +179,19 @@ export interface HeartbeatConfig {
   warnings: string[];
 }
 
+/**
+ * "HH:MM" syntax + range check (00-23 : 00-59). Mirrors loop/time.ts's
+ * parseHHMM range rules; duplicated rather than imported to avoid a
+ * config/ <-> loop/ cycle (loop/* already imports config/).
+ */
+function isValidHHMM(value: string): boolean {
+  const m = value.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return false;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  return h <= 23 && min <= 59;
+}
+
 const DAY_NAMES: Record<string, number> = {
   sun: 0, sunday: 0,
   mon: 1, monday: 1,
@@ -264,8 +277,8 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
     const v = schedule.get(key);
     if (v === undefined) return;
     const m = v.match(/^(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})$/);
-    if (m) apply({ start: m[1]!, end: m[2]! });
-    else warnings.push(`Invalid ${key} "${v}" (expected HH:MM-HH:MM)`);
+    if (m && isValidHHMM(m[1]!) && isValidHHMM(m[2]!)) apply({ start: m[1]!, end: m[2]! });
+    else warnings.push(`Invalid ${key} "${v}" (expected HH:MM-HH:MM, each 00-23:00-59)`);
   };
   window('working_hours', (w) => (cfg.workingHours = w));
   window('quiet_hours', (w) => (cfg.quietHours = w));
@@ -278,8 +291,8 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
   const time = (key: string, apply: (v: string) => void) => {
     const v = schedule.get(key);
     if (v === undefined) return;
-    if (/^\d{1,2}:\d{2}$/.test(v)) apply(v);
-    else warnings.push(`Invalid time for ${key}: "${v}" (expected HH:MM)`);
+    if (isValidHHMM(v)) apply(v);
+    else warnings.push(`Invalid time for ${key}: "${v}" (expected HH:MM, 00-23:00-59)`);
   };
   time('morning_brief_at', (v) => (cfg.morningBriefAt = v));
   time('evening_brief_at', (v) => (cfg.eveningBriefAt = v));

@@ -34,14 +34,21 @@ function significantWords(text: string): Set<string> {
 
 /**
  * Explicit identifiers worth trusting: PR/issue numbers (`#482`), jira-style
- * keys (`ACME-123`), bare 3-6 digit numbers, and URLs. Extracted from the
- * ORIGINAL (unstripped) text so `#`/hyphen punctuation survives.
+ * keys (`ACME-123`), and URLs. Extracted from the ORIGINAL (unstripped) text
+ * so `#`/hyphen punctuation survives.
+ *
+ * Deliberately NOT included: bare 3-6 digit numbers. A year ("2026") or a
+ * time extracted from a date reads as a "distinctive" token just as readily
+ * as a real PR number, which drops the confirm bar from the strict
+ * WORD_ONLY_MIN_JACCARD floor to the much looser DISTINCTIVE_MATCH_MIN_JACCARD
+ * one for two texts that otherwise share almost nothing — silently merging
+ * two different Tier-1 asks. Only identifiers with enough structure to be
+ * unambiguous (`#`, a letter-prefixed key, a URL) count as distinctive.
  */
 function distinctiveTokens(text: string): Set<string> {
   const tokens = new Set<string>();
   for (const m of text.matchAll(/#(\d{1,6})\b/g)) tokens.add(m[1]!);
   for (const m of text.matchAll(/\b[A-Z]{2,10}-\d+\b/g)) tokens.add(m[0].toUpperCase());
-  for (const m of text.matchAll(/\b\d{3,6}\b/g)) tokens.add(m[0]);
   for (const m of text.matchAll(/https?:\/\/\S+/g)) tokens.add(m[0]);
   return tokens;
 }

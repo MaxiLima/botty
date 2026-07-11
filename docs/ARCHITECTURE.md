@@ -13,7 +13,7 @@ third process in dev/test only.
 ```mermaid
 flowchart LR
     subgraph browser [Browser]
-        UI["@botty/web SPA<br/>Chat · Tasks · People · Inspector · Config"]
+        UI["@botty/web SPA<br/>Chat · Tasks · People · Inspector · Costs · Config"]
         PANEL[Sim control panel]
     end
 
@@ -26,9 +26,10 @@ flowchart LR
         CHAT[chat/]
         LOOP[loop/<br/>proactive loop]
         INGEST[ingest/<br/>adapters + funnel]
+        MCP[mcp/<br/>external MCP tools<br/>+ consent gate]
         LLM[llm/<br/>LlmClient]
         MEM[memory/<br/>Memory]
-        CFG[config/<br/>persona · team · heartbeat]
+        CFG[config/<br/>persona · team · heartbeat · mcp.json]
         BUS([bus — typed events])
         DB[(SQLite<br/>~/.botty/data/botty.db)]
     end
@@ -38,6 +39,7 @@ flowchart LR
     end
 
     CLAUDE[Claude Agent SDK<br/>→ user's Claude subscription<br/>+ claude.ai MCPs in real mode]
+    MCPSRV[user-configured external<br/>MCP servers, stdio]
     MAC[macOS Notification Center]
 
     UI <-->|"REST /api/* + WS /ws"| SERVER
@@ -47,11 +49,14 @@ flowchart LR
     SERVER --> CHAT & LOOP & INGEST
     CHAT & LOOP & INGEST --> LLM
     CHAT --> MEM
+    CHAT --> MCP
+    MCP -->|"read: mid-turn · action: queued, executes only on approval"| MCPSRV
     LLM --> CLAUDE
     CHAT & LOOP & INGEST & CFG -.->|emit| BUS
+    MCP -.->|"action.pending / action.resolved"| BUS
     BUS -.->|fan-out| SERVER
     LOOP --> MAC
-    CHAT & LOOP & INGEST & MEM & LLM --> DB
+    CHAT & LOOP & INGEST & MEM & LLM & MCP --> DB
     CFG --> DB
 ```
 
@@ -183,6 +188,12 @@ sequenceDiagram
     Note over PL,L: next tick's judgment sees this history —<br/>dismissed/expired tasks are not re-notified
 ```
 
+**Inferred commitments** ride this same tick judgment rather than a separate scheduler: a hidden
+post-turn chat pass (`chat/commitments.ts`) notices short-lived follow-ups ("my interview is
+tomorrow at 3") and stores them as `commitments` rows — operational state, not tasks, not durable
+memory. `loop/commitments.ts` folds due ones into the judgment context (untrusted-content wrapped,
+notify-or-skip only) and delivers them through the same notify path above. See `specs/loop.md`.
+
 ## 5. Chat — one thread, sessions sealed invisibly
 
 ```mermaid
@@ -217,6 +228,12 @@ Resilience in `llm/sdk.ts`: a 120s inactivity watchdog on the SDK stream, and if
 session hangs or fails, one automatic retry with a fresh session — but only when the failed
 attempt streamed no output (a retry after partial text would duplicate it) and the failure
 wasn't the user's own interrupt.
+
+**External MCP tools** are additional chat tools, re-derived every turn from
+`~/.botty/config/mcp.json`'s allowlist (`mcp/tools.ts`). `read`-mode tools call straight through
+to the MCP server mid-turn like any built-in tool; `action`-mode tools never do — the model can
+only enqueue a `pending_actions` row (`mcp/pending.ts`), and the agent's own MCP client only ever
+calls the tool on explicit user approval (`POST /api/actions/:id/approve`). See `specs/mcp.md`.
 
 ## 6. Notifications — one event, three surfaces
 
@@ -271,3 +288,8 @@ flowchart LR
 This closes the loop that botito never had: when a nudge felt wrong or a task was missed, you
 can see exactly what the model saw, change the prompt, and re-run the last N *real* decisions
 before shipping the change.
+
+`ai_decisions` also prices out spend: `GET /api/costs` (`server/costs.ts`) rolls every call up by
+activity category (chat/intake/proactive/resolution/briefing/other) and model, at USD/MTok rates
+(overridable via the `llm.pricing` setting), over today/7d/30d/all-time windows plus a 30-day
+daily series — rendered as the web **Costs** page and the TUI `/costs` panel.

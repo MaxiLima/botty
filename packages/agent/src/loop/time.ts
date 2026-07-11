@@ -55,9 +55,16 @@ export function isWithinWorkingHours(
   return start < end ? now >= start && now < end : now >= start || now < end;
 }
 
-/** Milliseconds until the next local occurrence of "HH:MM" strictly after `from`. */
-export function msUntilNextTime(from: Date, hhmm: string): number {
-  const minutes = parseHHMM(hhmm) ?? 0;
+/**
+ * Milliseconds until the next local occurrence of "HH:MM" strictly after `from`.
+ * Returns null when `hhmm` is unparseable — callers must treat that as "don't
+ * arm a timer" rather than falling back to midnight (an unparseable time used
+ * to silently arm for 00:00 via `?? 0`, which is not "no-op", it's a real fire
+ * time that the caller would then race against its working-hours gate).
+ */
+export function msUntilNextTime(from: Date, hhmm: string): number | null {
+  const minutes = parseHHMM(hhmm);
+  if (minutes === null) return null;
   const next = new Date(from);
   next.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
   if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 1);
