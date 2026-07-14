@@ -47,6 +47,21 @@ section below).
   5820/5821 instance (origin guard, allowlist, funnel+dedup, tick, pagination,
   TUI boot, cross-client chat via puppeteer, sim panel). Deliberately deferred:
   LICENSE choice and lint/formatter (Biome) adoption — both owner decisions.
+- ~~Manual-testing sandbox~~ **shipped 2026-07-14**: `npm run sandbox` — persistent
+  playground on **6820/6821** (`~/.botty-sandbox`, `BOTTY_SANDBOX_DIR` override) for
+  day-to-day-style TUI testing with time compressed. Zero `packages/*` source changes:
+  `scripts/sandbox.ts` (start/stop/reset/warp/inject/check/tick/sweep/status) seeds a
+  fast heartbeat profile (1-min tick, zero min-age/min-gap, working/quiet hours
+  disabled via degenerate `00:00-00:00` windows, cooldowns 1/2/4h kept nonzero so
+  anti-nag stays observable) plus fixture `team.md` (Rodrigo NORMAL on purpose — tier
+  gate testable); new `packages/sim/scenarios/sandbox.json` (empty timeline + inject
+  templates: meeting-notes email, calendar invites, thread ask + outbound self-reply
+  pair, Tier-2 noise); `inject` pairs sim `/control/inject` with agent `check-now` for
+  seconds-level end-to-end; `warp` wraps timewarp with the agent stop/restart dance.
+  Real LLM by default (`--mock` opt-in — mock judgment always skips, no nudges). Docs:
+  TESTING.md §0, README, `.claude/skills/sandbox/`. Known seam: the mock classifier
+  reads only the first `TEXT:` line, so multi-line email fixtures need a signal phrase
+  in the Subject to extract under mock.
 
 ## P0 — becoming the daily driver
 

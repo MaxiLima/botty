@@ -25,6 +25,39 @@ uniformly, so orderings and relative ages stay consistent.)
 
 ---
 
+## 0. Sandbox — one-shot manual playground
+
+For day-to-day-style testing through the TUI without any of the setup below:
+
+```sh
+npm run sandbox
+```
+
+Boots an isolated sim (**:6821**) + agent (**:6820**, real LLM via your Claude Code
+login) against a persistent `~/.botty-sandbox` data dir, loads the `sandbox` scenario
+(empty timeline + extra inject templates), and attaches the TUI. First boot seeds a
+**fast heartbeat profile** (1-min tick, no min-age, no working/quiet-hours gates,
+1/2/4h cooldowns) and a `team.md` with the fixture people — both hot-editable under
+`~/.botty-sandbox/config/`.
+
+Inject events from the sim panel at <http://localhost:6821> (Slack DMs from peers,
+your own outbound replies, meeting-notes emails, calendar invites…) or via the CLI:
+
+| Command | Effect |
+|---|---|
+| `npm run sandbox inject <template-id>` | inject a template + force the source poll (instant end-to-end) |
+| `npm run sandbox check [source]` | force a poll (all sources or one) |
+| `npm run sandbox tick` / `sweep` | force a proactive tick / resolution sweep |
+| `npm run sandbox warp -- --hours 6` | timewarp the sandbox DB (auto stop/restart of the agent) |
+| `npm run sandbox status` / `stop` / `reset` | health · kill 6820/6821 listeners · wipe + reseed |
+
+Flags: `--no-tui`, `--mock` (free/instant, but judgment always skips — no nudges).
+Port map: **4820/4821 live dev (never touch) · 5820/5821 verify-ephemeral · 6820/6821
+sandbox-persistent**. The recipes below still apply when you need scripted scenarios
+or the live-port setup.
+
+---
+
 ## 1. Notifications — "when botty tells me something, I notice"
 
 Every surface goes to three places at once: a `proactive_log` row (audit), an in-chat card with

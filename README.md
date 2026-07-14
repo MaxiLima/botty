@@ -62,6 +62,7 @@ per-token API bill. Set `BOTTY_MOCK_LLM=1` to skip the SDK entirely (see the env
 npm run typecheck        # all workspaces
 npm test                 # all workspaces
 npm run dev:web          # vite dev server on :5173 (proxies to :4820)
+npm run sandbox          # persistent manual-testing playground on 6820/6821 + TUI — docs/TESTING.md §0
 npm run timewarp -- --hours 6                  # shift the DB clock to test the proactive loop
 npm run replay -- --kind judgment --last 20    # re-run recorded AI decisions
 ```

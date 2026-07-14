@@ -1,0 +1,88 @@
+{
+  "name": "sandbox",
+  "description": "Empty timeline for the manual-testing sandbox (npm run sandbox) — everything arrives via ad-hoc injection from the control panel or `sandbox inject <id>`. Adds templates for meeting-notes email, calendar invites, a threaded ask + outbound self-reply pair, and Tier-2 noise; the built-in default templates merge in automatically.",
+  "people": [
+    { "name": "Marian", "slackHandle": "@marian", "email": "marian@acme.example" },
+    { "name": "Sofi", "slackHandle": "@sofi", "email": "sofi@acme.example" },
+    { "name": "Diego", "slackHandle": "@diego", "email": "diego@acme.example" },
+    { "name": "Caro", "slackHandle": "@caro", "email": "caro@acme.example" },
+    { "name": "Rodrigo", "slackHandle": "@rodrigo", "email": "rodrigo@acme.example" },
+    { "name": "Fer", "slackHandle": "@fer", "email": "fer@vendorpay.io" }
+  ],
+  "events": [],
+  "templates": [
+    {
+      "id": "gmail-meeting-notes",
+      "label": "Caro: meeting notes email with action items",
+      "event": {
+        "source": "gmail",
+        "kind": "email",
+        "actor": { "email": "caro@acme.example", "displayName": "Caro Núñez" },
+        "text": "Subject: Notas — payments sync (action items, please review)\n\nResumen de la sync de hoy.\n\nAction items:\n- Maxo: please send the R-77 rollback plan to legal by Friday\n- Maxo: agendar la revisión de fraude MX con Marian\n- Diego: actualizar el runbook del velocity cap"
+      }
+    },
+    {
+      "id": "gcal-invite-soon",
+      "label": "Calendar: incident review in 45 min (Marian attending)",
+      "event": {
+        "source": "gcal",
+        "kind": "event",
+        "text": "Incident review — chargeback spike MX",
+        "meta": {
+          "startAtMinute": 45,
+          "durationMin": 30,
+          "attendees": ["marian@acme.example", "maxo@acme.example"],
+          "location": "Meet"
+        }
+      }
+    },
+    {
+      "id": "gcal-invite-tomorrow",
+      "label": "Calendar: vendor demo tomorrow",
+      "event": {
+        "source": "gcal",
+        "kind": "event",
+        "text": "VendorPay integration demo",
+        "meta": {
+          "startAtMinute": 1440,
+          "durationMin": 60,
+          "attendees": ["fer@vendorpay.io", "maxo@acme.example"],
+          "location": "Zoom"
+        }
+      }
+    },
+    {
+      "id": "slack-thread-ask",
+      "label": "Diego: asks for the design doc (thread T-SBX-1)",
+      "event": {
+        "source": "slack",
+        "kind": "dm",
+        "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+        "text": "Che, ¿me pasás el design doc del velocity cap? Lo necesito para la review de mañana.",
+        "threadRef": "T-SBX-1"
+      }
+    },
+    {
+      "id": "slack-thread-self-reply",
+      "label": "Me: outbound reply in T-SBX-1 (resolution evidence)",
+      "event": {
+        "source": "slack",
+        "kind": "dm",
+        "direction": "outbound",
+        "actor": { "displayName": "me" },
+        "text": "Listo, te lo acabo de mandar por mail ✅",
+        "threadRef": "T-SBX-1"
+      }
+    },
+    {
+      "id": "slack-tier2-noise",
+      "label": "Rodrigo (Tier 2): social noise — must die at the tier gate",
+      "event": {
+        "source": "slack",
+        "kind": "dm",
+        "actor": { "handle": "@rodrigo", "displayName": "Rodrigo Peña" },
+        "text": "¿Viste el partido anoche? Increíble el segundo gol."
+      }
+    }
+  ]
+}

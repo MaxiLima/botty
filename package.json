@@ -13,6 +13,7 @@
     "dev:sim": "npm run dev -w @botty/sim",
     "dev:web": "npm run dev -w @botty/web",
     "dev:tui": "npm run dev -w @botty/tui",
+    "sandbox": "tsx scripts/sandbox.ts",
     "timewarp": "npm run timewarp -w @botty/agent --",
     "replay": "npm run replay -w @botty/agent --",
     "setup": "npm install && npm run build -w @botty/web"
