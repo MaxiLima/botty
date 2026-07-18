@@ -22,6 +22,7 @@ import {
   type PendingTurn,
 } from './transcript.js';
 import { startWs, useOnReconnect, useWsEvent, useWsStatus } from './ws.js';
+import { WizardEditor } from './editor.js';
 import {
   buildApplyRequest,
   currentQuestion,
@@ -443,19 +444,12 @@ export function App({ config }: { config: TuiConfig }) {
     setWizard(initWizard(st));
   }, [api]);
 
-  // Text questions answer via the composer with the prefill pre-typed — Enter
-  // keeps it. Re-key the draft on every question change (and remount the input:
-  // a programmatic draft change leaves ink-text-input's cursor stale, see the
-  // Tab-completion note below).
+  // Text questions answer via the WizardEditor (a real multiline buffer —
+  // ink-text-input is single-line and mangles section text with newlines).
+  // The question key remounts the editor so each question re-derives its
+  // buffer from the prefill; Enter with the prefill unedited = keep it.
   const wizardQ = wizard ? currentQuestion(wizard) : null;
   const wizardQKey = wizard && wizardQ ? `${wizardQ.id}:${wizard.stepIndex}:${wizard.qIndex}:${wizard.sub?.qIndex ?? -1}` : null;
-  useEffect(() => {
-    if (wizardQKey === null) return;
-    const q = wizardRef.current ? currentQuestion(wizardRef.current) : null;
-    setDraft(q?.kind === 'text' ? q.prefill : '');
-    setInputEpoch((e) => e + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wizardQKey]);
 
   // Review step: fetch the server-rendered preview once, print it as a panel
   // (env values masked in mcp.json), then the confirm question unlocks.
@@ -525,12 +519,6 @@ export function App({ config }: { config: TuiConfig }) {
 
   const submit = useCallback(
     (value: string) => {
-      // Wizard mode owns the composer: Enter submits the current text answer
-      // verbatim (the prefill unedited = keep the current value).
-      if (wizardRef.current) {
-        dispatchWizard({ type: 'submit', text: value });
-        return;
-      }
       const text = value.trim();
       if (!text) return;
       // Only an unindented "/" is a command — a leading space escapes to chat.
@@ -550,7 +538,7 @@ export function App({ config }: { config: TuiConfig }) {
       }
       void runCommand(cmd, parsed?.arg ?? '');
     },
-    [dispatchWizard, menu, pushItem, runCommand, selected, send],
+    [menu, pushItem, runCommand, selected, send],
   );
 
   useInput((input, key) => {
@@ -564,13 +552,13 @@ export function App({ config }: { config: TuiConfig }) {
       }
       const q = currentQuestion(w);
       if (q && q.kind !== 'text') {
-        // Composer is hidden for these — letters are wizard keys (y/n, a/e/d).
+        // Letters are wizard keys (y/n, a/e/d) for selects and lists.
         if (key.upArrow) dispatchWizard({ type: 'key', key: 'up' });
         else if (key.downArrow) dispatchWizard({ type: 'key', key: 'down' });
         else if (key.return) dispatchWizard({ type: 'key', key: 'enter' });
         else if (input) dispatchWizard({ type: 'key', key: input.toLowerCase() });
       }
-      return; // text questions: the composer handles typing + Enter
+      return; // text questions: the WizardEditor's own useInput handles typing + Enter
     }
     if (menuOpen && key.upArrow) setMenuIndex((i) => (i + menu.length - 1) % menu.length);
     else if (menuOpen && key.downArrow) setMenuIndex((i) => (i + 1) % menu.length);
@@ -613,8 +601,6 @@ export function App({ config }: { config: TuiConfig }) {
     .filter(Boolean)
     .join(' · ');
 
-  const composerVisible = !wizard || wizardQ?.kind === 'text';
-
   return (
     <Box flexDirection="column">
       <Static items={items}>
@@ -623,8 +609,15 @@ export function App({ config }: { config: TuiConfig }) {
       {pending && <PendingView pending={pending} />}
       {sendError && <Text color="red">✗ {sendError}</Text>}
       {wizard && wizardQ && <WizardView state={wizard} q={wizardQ} />}
-      {composerVisible && (
-        <Box borderStyle="round" borderColor={wizard ? 'magenta' : pending ? 'yellow' : 'gray'} paddingX={1}>
+      {wizard && wizardQ?.kind === 'text' && !wizard.done && (
+        <WizardEditor
+          key={wizardQKey}
+          initial={wizardQ.prefill}
+          onSubmit={(text) => dispatchWizard({ type: 'submit', text })}
+        />
+      )}
+      {!wizard && (
+        <Box borderStyle="round" borderColor={pending ? 'yellow' : 'gray'} paddingX={1}>
           <Text color="magenta" bold>
             ›{' '}
           </Text>
@@ -632,17 +625,11 @@ export function App({ config }: { config: TuiConfig }) {
             key={inputEpoch}
             value={draft}
             onChange={(v) => {
-              setDraft(wizard ? v : normalizePastedInput(v));
+              setDraft(normalizePastedInput(v));
               setMenuIndex(0);
             }}
             onSubmit={submit}
-            placeholder={
-              wizard
-                ? 'enter keeps the shown value'
-                : pending
-                  ? 'streaming — Esc to interrupt'
-                  : 'message botty, or / for commands'
-            }
+            placeholder={pending ? 'streaming — Esc to interrupt' : 'message botty, or / for commands'}
           />
         </Box>
       )}

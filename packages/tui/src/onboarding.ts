@@ -4,12 +4,14 @@
 // flow is unit-testable (test/onboarding.test.ts).
 //
 // Interaction grammar (per spec):
-// - one question at a time; text questions answer via the composer (Enter keeps
-//   the prefilled value), selects/toggles via ↑↓ or y/n + Enter;
+// - one question at a time; text questions answer via the WizardEditor
+//   multiline buffer (Enter keeps the prefilled value, ctrl+n inserts a
+//   newline), selects/toggles via ↑↓ or y/n + Enter;
 // - repeating groups (people / servers / checklist) are list views: a=add,
 //   e=edit, d=delete, Enter continues;
-// - Esc backs up one question; Esc at the very first question asks
-//   "abandon setup?" — abandoning writes nothing;
+// - Esc backs up one question; at a step's first question it jumps to the
+//   previous step's gate (fast step-walking); at the very first question it
+//   asks "abandon setup?" — abandoning writes nothing;
 // - each writing step opens with a confirm/skip gate: only gated-in steps land
 //   in the apply `steps` array, so a run that only walks Schedule never touches
 //   persona.md.
@@ -567,10 +569,10 @@ function back(state: WizardState): WizardState {
   if (state.stepIndex === 0) return { ...state, abandonPrompt: true, selIndex: 1 };
   // Backing out of review invalidates the fetched preview — re-entering refetches.
   const cleared = { ...state, preview: step === 'review' ? null : state.preview };
-  const prevIndex = state.stepIndex - 1;
-  const prevStep = WIZARD_STEPS[prevIndex];
-  const qs = prevStep === undefined ? [] : stepQuestions(cleared, prevStep);
-  return resetQ({ ...cleared, stepIndex: prevIndex, qIndex: Math.max(0, qs.length - 1) });
+  // Land on the previous step's GATE (first question), not its last question —
+  // repeated Esc walks whole steps, and re-confirming a gate re-enters that
+  // step's questions with the saved answers prefilled.
+  return resetQ({ ...cleared, stepIndex: state.stepIndex - 1, qIndex: 0, listCursor: 0 });
 }
 
 // ---------- reducer ----------

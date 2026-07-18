@@ -118,7 +118,13 @@ section below).
    TUI (`/onboarding` wizard mode), re-runnable with prefill. `config/render.ts` renderer
    (round-trip tested), `GET /api/onboarding` + preview/apply/mcp-probe endpoints,
    `onboarding.completedAt` settings key, `onboarded` on `/api/health`, archive-on-save
-   extended to mcp.json.
+   extended to mcp.json. **Fix wave same day** (first-dogfood findings): TUI text
+   questions moved off single-line ink-text-input onto a real multiline `WizardEditor`
+   (`tui/src/editor.tsx` — cursor nav, ctrl+n newline, paste; component-tested via new
+   ink-testing-library devDep); Esc at a step's first question now jumps to the previous
+   step's gate (fast step-walking); prefill no longer leaks the seeded fixture templates —
+   persona/team byte-identical to any shipped variant prefill blank (`isSeededTemplate`),
+   so a new user defines persona and per-member team weights from scratch.
    - ~~Resolution sweep~~ **shipped 2026-07-04** (`loop/resolution-sweep.ts`, specs/loop.md):
      auto-closes slack/gmail tasks from thread evidence — including the user's own outbound
      replies ("review done"), ingested via the new `direction` field on SourceEvent. Note for

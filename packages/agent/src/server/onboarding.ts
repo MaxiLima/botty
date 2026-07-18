@@ -10,6 +10,7 @@ import {
   type OnboardingStepName,
 } from '@botty/shared';
 import type { AgentContext } from '../context.js';
+import { templatesDir } from '../env.js';
 import { answersFromConfig, renderHeartbeat, renderMcp, renderPersona, renderTeam } from '../config/index.js';
 import { createMcpConnections } from '../mcp/connections.js';
 import { nowIso } from '../db/index.js';
@@ -32,6 +33,31 @@ const STEP_TARGET: Record<OnboardingStepName, TargetFile> = {
   schedule: 'heartbeat',
   directives: 'heartbeat',
 };
+
+/** persona.md / team.md ship as fixture-flavored templates (sim: Maxo's persona,
+ * the Acme roster) or neutral `.real.md` variants. A file still byte-identical to
+ * any shipped variant carries no user content — prefill it blank instead, so the
+ * fixture persona and team never leak into a new user's wizard. */
+function isSeededTemplate(file: 'persona' | 'team', current: string): boolean {
+  const cur = current.trim();
+  return [`${file}.md`, `${file}.real.md`].some((name) => {
+    try {
+      return fs.readFileSync(path.join(templatesDir, name), 'utf8').trim() === cur;
+    } catch {
+      return false;
+    }
+  });
+}
+
+const BLANK_PERSONA = {
+  kind: 'fields',
+  name: '',
+  role: '',
+  addressAs: '',
+  timezone: '',
+  tone: '',
+  banned: '',
+} as const;
 
 export function registerOnboardingRoutes(router: Router, ctx: AgentContext): void {
   const { db, config, env } = ctx;
@@ -110,6 +136,8 @@ export function registerOnboardingRoutes(router: Router, ctx: AgentContext): voi
         mode: env.mode,
         models: db.getSetting<Record<string, string>>('llm.models'),
       });
+      if (isSeededTemplate('persona', config.persona())) answers.persona = BLANK_PERSONA;
+      if (isSeededTemplate('team', config.raw('team'))) answers.team = { people: [] };
       res.json({
         onboarded: completedAt !== null,
         completedAt,

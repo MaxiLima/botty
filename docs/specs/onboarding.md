@@ -67,6 +67,12 @@ agent import it; run root `npm run typecheck`).
   available always, not just on first run.
 - Re-run prefills from live config (see prefill rules below) and on apply overwrites the same
   files — the existing archive-on-save snapshot (`config/index.ts`) is the undo story.
+- **Untouched templates prefill blank** (`isSeededTemplate` in `server/onboarding.ts`): a
+  persona.md/team.md still byte-identical to any shipped template variant (sim fixture or
+  `.real.md`) carries no user content, so prefill returns blank `fields`-mode persona and an
+  empty roster — the fixture persona (Maxo) and Acme team never leak into a new user's
+  wizard. The moment the file differs from the template (hand edit or a prior apply),
+  prefill parses the real content instead.
 
 ## API surface
 
@@ -235,12 +241,19 @@ navigate to Chat. All components live in `packages/web/src/pages/OnboardingPage/
 a **wizard mode** that owns the input line until exit (mirrors how transient modes already
 work — the command menu precedent). Interaction grammar, one question at a time:
 
-- Text prompt with prefill shown dim; Enter keeps it.
+- Text questions edit in the `WizardEditor` (`editor.tsx`) — a real multiline buffer
+  (ink-text-input is single-line and mangles section text with newlines): prefill loaded
+  into the buffer, `←→↑↓` move a visible (row, col) cursor across lines, `ctrl+n` inserts a
+  newline (terminals can't distinguish shift+enter), `ctrl+a`/`ctrl+e` jump to line
+  start/end, multi-line paste is preserved, Enter submits the buffer (unedited prefill =
+  keep it).
 - Toggles/selects: arrow keys or `y`/`n`, Enter confirms.
 - Repeating groups (people, servers, checklist): list view; `a`dd / `e`dit / `d`elete /
   Enter continues.
-- `Esc` backs up one question; `Esc` at the first question prompts "abandon setup? y/n" —
-  abandoning writes nothing.
+- `Esc` backs up one question; at a step's **first** question it jumps to the previous
+  step's gate (so repeated Esc walks whole steps — re-confirming a gate re-enters its
+  questions with saved answers prefilled); `Esc` at the very first question prompts
+  "abandon setup? y/n" — abandoning writes nothing.
 - Each writing step opens with a confirm/skip gate (`y`/`n`) — only gated-in steps land in
   the apply `steps` array, which is how "every step skippable" works in a linear
   question flow.

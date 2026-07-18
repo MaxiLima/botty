@@ -97,6 +97,18 @@ describe('wizard navigation', () => {
     s = key(s, 'esc');
     expect(currentQuestion(s)?.id).toBe('persona.gate');
   });
+
+  it("esc at a step's first question jumps to the previous step's gate, not its last question", () => {
+    let s = initWizard(STATE);
+    s = enter(s); // welcome → persona gate
+    s = yes(s); // persona confirmed → walk all fields
+    for (const v of ['Ana', 'CTO', 'Ana', 'UTC', 'terse', '']) s = submit(s, v);
+    expect(currentQuestion(s)?.id).toBe('team.gate');
+    s = key(s, 'esc');
+    expect(currentQuestion(s)?.id).toBe('persona.gate'); // gate, not persona.banned
+    s = key(s, 'esc');
+    expect(currentQuestion(s)?.id).toBe('welcome');
+  });
 });
 
 describe('wizard answers', () => {

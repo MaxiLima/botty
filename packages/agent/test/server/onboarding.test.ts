@@ -93,7 +93,7 @@ const postJson = async (base: string, url: string, body: unknown): Promise<Respo
   });
 
 describe('GET /api/onboarding', () => {
-  it('reports not-onboarded on a fresh install, with checks and template prefill', async () => {
+  it('reports not-onboarded on a fresh install, with checks and BLANK persona/team prefill', async () => {
     const h = await setup();
     try {
       const state = await getState(h.base);
@@ -103,13 +103,42 @@ describe('GET /api/onboarding', () => {
       expect(state.checks.mockLlm).toBe(true);
       expect(state.checks.dataDir).toBe(h.ctx.env.dataDir);
       expect(state.prefillWarnings).toEqual([]);
-      expect(state.prefill.team!.people.map((p) => p.name)).toEqual(['Marian', 'Sofi', 'Diego']);
-      expect(state.prefill.persona!.kind).toBe('sections');
+      // Untouched seeded templates carry no user content — the fixture persona
+      // (Maxo) and Acme roster must never leak into a new user's wizard.
+      expect(state.prefill.team!.people).toEqual([]);
+      expect(state.prefill.persona!).toEqual({
+        kind: 'fields',
+        name: '',
+        role: '',
+        addressAs: '',
+        timezone: '',
+        tone: '',
+        banned: '',
+      });
       expect(state.mtimes.persona).toBeTypeOf('number');
       expect(state.mtimes.mcp).toBeTypeOf('number');
 
       const health = (await (await fetch(`${h.base}/api/health`)).json()) as { onboarded: boolean };
       expect(health.onboarded).toBe(false);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('prefills from the files once they differ from the seeded template', async () => {
+    const h = await setup();
+    try {
+      h.ctx.config.save(
+        'persona',
+        '# PERSONA\n\n## Identity\n\nYou are botty.\n\n## About Ana\n\nAna, CTO at Initech.\n\n## Voice & tone\n\nTerse.\n\n## Banned\n\nNothing.\n',
+      );
+      h.ctx.config.save(
+        'team',
+        '# TEAM\n\n## People\n\n- **Ana** — weight: CRITICAL | email: ana@initech.example\n',
+      );
+      const state = await getState(h.base);
+      expect(state.prefill.persona!.kind).toBe('sections');
+      expect(state.prefill.team!.people.map((p) => p.name)).toEqual(['Ana']);
     } finally {
       await h.teardown();
     }
