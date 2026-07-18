@@ -90,8 +90,21 @@ purpose so the tier gate is testable — his messages must never become tasks.
 // ---------- helpers ----------
 
 function childEnv(mock: boolean): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // When the sandbox is launched from inside a Claude Code session, the session's
+  // internal env (CLAUDECODE, CLAUDE_CODE_*, its scoped ANTHROPIC_API_KEY) leaks in
+  // and breaks the agent's SDK auth — strip it so the SDK falls back to the user's
+  // own login. Only done when CLAUDECODE marks a nested session; a deliberately
+  // exported user API key outside a session is left alone.
+  if (env.CLAUDECODE) {
+    for (const key of Object.keys(env)) {
+      if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key === 'CLAUDE_EFFORT') delete env[key];
+    }
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
   return {
-    ...process.env,
+    ...env,
     BOTTY_DATA_DIR: DIR,
     BOTTY_MODE: 'sim',
     AGENT_PORT: String(AGENT_PORT),
@@ -275,6 +288,14 @@ async function start(opts: { tui: boolean; mock: boolean }): Promise<void> {
     } catch (err) {
       console.error(`warning: could not load the sandbox scenario: ${(err as Error).message}`);
     }
+  }
+  // Keep the scenario clock playing at 1:1. A paused clock freezes sim-now, so every
+  // inject shares one occurredAt — the resolution sweep's per-task evidence watermark
+  // (newest <= last-checked) then skips all re-checks as no_new_evidence forever.
+  try {
+    await post(`${SIM_URL}/control/scenario/play`, { speed: 1 });
+  } catch (err) {
+    console.error(`warning: could not start the sim clock: ${(err as Error).message}`);
   }
 
   printCheatsheet(fresh, opts.mock);

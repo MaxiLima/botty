@@ -27,6 +27,9 @@ uniformly, so orderings and relative ages stay consistent.)
 
 ## 0. Sandbox — one-shot manual playground
 
+Full walkthrough (mental model, inject recipes with expected outcomes, warp table,
+troubleshooting): **`docs/E2E-GUIDE.md`**.
+
 For day-to-day-style testing through the TUI without any of the setup below:
 
 ```sh

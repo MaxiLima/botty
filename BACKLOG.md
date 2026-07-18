@@ -62,6 +62,43 @@ section below).
   TESTING.md §0, README, `.claude/skills/sandbox/`. Known seam: the mock classifier
   reads only the first `TEXT:` line, so multi-line email fixtures need a signal phrase
   in the Subject to extract under mock.
+- **Findings — 2026-07-18 sandbox dogfooding** (12-round injected-traffic session, real
+  LLM, ~2h autonomous; sweeper/judgment behavior validated end to end — 11 correct
+  auto-closes incl. requester-cancel, them-owned delivery, structured PR-merge/Jira-Done,
+  and correct refusals on a follow-up ping and vague praise; tier gate, classifier
+  noise, dedup, decisions, owner inversion, briefing all passed):
+  1. **Nudge cards are never replayed** — web/TUI notification stores are fed only by
+     the live WS `notification` event (`web/src/lib/stores.ts:159`), never hydrated
+     from `proactive_log` on connect. A nudge fired while no client is attached shows
+     as a macOS banner but never appears in any chat surface afterwards (only the
+     Inspector). Hit in practice on the first day of sandbox use.
+  2. **Same-thread follow-up spawns a sibling task** — Marian pinging "any update?" in
+     an existing ask's thread created a second task (`T-BOARD-1#2`) for the same
+     deliverable instead of attaching to the original; extraction-level near-dup
+     consolidation missed it (same person, same thread). Also seen cross-person
+     (Sofi's R-77 email vs Caro's meeting-notes action item → judgment snoozed the
+     dup, which masks rather than merges).
+  3. **Gmail tasks without a thread ref can never auto-resolve** — the requester's own
+     cancellation email ("no need, tema cerrado") dies at the heuristic gate as an
+     unlinked event and the sweep skips the task as `no_thread`/unlinked forever.
+     Contract for the M4 real Gmail driver (extends the existing outbound-direction
+     note): **must emit Gmail thread IDs as `threadRef`**, or email-resolved tasks rot
+     open. Same applies to any source whose fixtures omit threadRef.
+  4. **Sweep watermark `<=` edge (real-mode, low prio)** — `resolution-sweep.ts` skips
+     when `newest evidence occurredAt <= last-checked evidenceTs`; same-timestamp
+     evidence batches (bulk imports, coarse timestamps) can strand a task after one
+     `resolved:false` check. In the sandbox this was catastrophic-looking (paused sim
+     clock froze occurredAt for every inject → any second check impossible; both
+     "stranded" tasks healed instantly once the clock played) — launcher now keeps the
+     scenario clock playing at speed 1, and inject-while-paused is a sim footgun worth
+     an engine-level fix (default ad-hoc inject occurredAt to wall-now when paused).
+  5. Minor observations: prep tasks for already-past meetings stay open (board
+     clutter); judgment silently snoozes already-missed deadlines (offsite confirm
+     due EOD → snoozed to next morning) instead of flagging the miss.
+  Sandbox launcher fixes applied during the session (in `scripts/sandbox.ts`,
+  uncommitted): strip leaked Claude-session env (`CLAUDECODE*`, scoped
+  `ANTHROPIC_API_KEY`) so SDK auth falls back to the user login, and auto-play the
+  scenario clock at 1:1 on start.
 
 ## P0 — becoming the daily driver
 
@@ -76,6 +113,12 @@ section below).
    to hold real data.
 4. **Remaining M4 intelligence:** cadence drift (CRITICAL person gone quiet vs declared
    cadence), urgent-inbound trigger (immediate tick on high-confidence Tier-1 DM).
+5. ~~Onboarding wizard~~ **shipped 2026-07-18** (`docs/specs/onboarding.md`, spec updated
+   to as-built): guided first-run setup in both web (`/onboarding` + first-run banner) and
+   TUI (`/onboarding` wizard mode), re-runnable with prefill. `config/render.ts` renderer
+   (round-trip tested), `GET /api/onboarding` + preview/apply/mcp-probe endpoints,
+   `onboarding.completedAt` settings key, `onboarded` on `/api/health`, archive-on-save
+   extended to mcp.json.
    - ~~Resolution sweep~~ **shipped 2026-07-04** (`loop/resolution-sweep.ts`, specs/loop.md):
      auto-closes slack/gmail tasks from thread evidence — including the user's own outbound
      replies ("review done"), ingested via the new `direction` field on SourceEvent. Note for
@@ -201,6 +244,15 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
   load, so resolved cards vanish on reload too.)
 - **mcp.json has no UI**: hand-edit only (hot reload + `issues.mcp` catch mistakes). A
   Config-page editor with the same validate-on-save flow as the markdown files would fit.
+- **No MCP server status visibility** (2026-07-18): nothing in the web UI or TUI shows
+  whether a configured MCP server is actually reachable, what tools its `tools/list`
+  advertised vs what the allowlist names (a typo'd tool name silently degrades to the
+  generic-description fallback), or when the last successful `tools/list` fetch happened —
+  today the only signal is digging through chat-turn tool errors. Add a status surface
+  (Inspector tab or Config-page section, plus TUI panel): per server — reachable?, last
+  probe time/error, advertised tools with allowlisted/unlisted markers. The
+  `POST /api/onboarding/mcp-probe` endpoint from `docs/specs/onboarding.md` step 5 is the
+  same probe — build it once and reuse it here.
 - **JSON-Schema→zod converter is best-effort** (`mcp/schema.ts`): flat schemas convert
   fully; nested/exotic constructs degrade to permissive `z.unknown()` with the raw schema
   embedded in the tool description. Tighten per-construct as real MCP servers surface gaps.
