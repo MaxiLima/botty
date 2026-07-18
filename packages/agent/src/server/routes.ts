@@ -19,6 +19,7 @@ import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { nowIso, type Db } from '../db/index.js';
 import { badRequest, conflict, notFound, param, parseBody, queryInt, queryStr, wrap } from './errors.js';
+import { ONBOARDING_COMPLETED_KEY, registerOnboardingRoutes } from './onboarding.js';
 import { buildCostsReport, pricingWithOverrides } from './costs.js';
 import { nanoid } from 'nanoid';
 import { notifyMacos } from '../loop/notify-macos.js';
@@ -98,7 +99,15 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
         quietHoursRange: `${hb.quietHours.start}-${hb.quietHours.end}`,
         activeToday: isActiveDay(now, hb.activeDays),
       };
-      res.json({ ok: true, version: AGENT_VERSION, mode: env.mode, dbPath: env.dbPath, schedule });
+      res.json({
+        ok: true,
+        version: AGENT_VERSION,
+        mode: env.mode,
+        dbPath: env.dbPath,
+        schedule,
+        // First-run detection for both clients (docs/specs/onboarding.md).
+        onboarded: db.getSetting<string>(ONBOARDING_COMPLETED_KEY) !== undefined,
+      });
     }),
   );
 
@@ -507,6 +516,10 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
       res.json({ settings: db.allSettings() });
     }),
   );
+
+  // ----- onboarding wizard (docs/specs/onboarding.md) -----
+
+  registerOnboardingRoutes(router, ctx);
 
   // Unknown /api routes → JSON 404 (never the SPA fallback).
   router.use((req, res) => {

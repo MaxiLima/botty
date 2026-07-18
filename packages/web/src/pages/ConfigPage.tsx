@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { CONFIG_FILE_NAMES, type ConfigFileName } from '@botty/shared';
 import { api } from '../lib/api.js';
 import { shortDateTime } from '../lib/format.js';
+import { navigate } from '../lib/router.js';
 import { useOnReconnect, useWsEvent } from '../lib/ws.js';
 import '../styles/config.css';
 
@@ -86,6 +87,12 @@ export function ConfigPage() {
   return (
     <div className="config-page">
       {pageError && <div className="page-error">{pageError}</div>}
+      <div className="config-toolbar">
+        <span className="muted">Prefer a guided walkthrough of these files?</span>
+        <button className="btn btn-ghost" onClick={() => navigate('onboarding')}>
+          Run setup again
+        </button>
+      </div>
       <div className="config-grid">
         {CONFIG_FILE_NAMES.map((name) => {
           const s = state[name];

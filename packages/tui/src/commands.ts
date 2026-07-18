@@ -15,21 +15,23 @@ import { byPriorityThenAge } from './format.js';
 /** Structured output of a slash command, rendered as a block in the transcript. */
 export type PanelData =
   | { type: 'help' }
-  | { type: 'welcome'; version: string; mode: string; baseUrl: string; taskCount: number }
+  | { type: 'welcome'; version: string; mode: string; baseUrl: string; taskCount: number; onboarded: boolean }
   | { type: 'tasks'; tasks: Task[] }
   | { type: 'people'; people: Person[] }
   | { type: 'person'; person: Person; interactions: Interaction[]; tasks: Task[] }
   | { type: 'inspector'; decisions: AiDecision[]; ticks: TickLogRow[]; checks: SourceCheckRow[] }
   | { type: 'costs'; report: CostsReport }
   | { type: 'config'; name: string; content: string }
+  | { type: 'onboardingReview'; files: { name: string; content: string; changed: boolean }[] }
   | { type: 'health'; ok: boolean; version: string; mode: string; dbPath: string; baseUrl: string };
 
 export interface CommandResult {
   panel?: PanelData;
   info?: string;
   error?: string;
-  /** Side effects the App owns (sealing prints a seam; quit unmounts). */
-  action?: 'seal' | 'quit';
+  /** Side effects the App owns (sealing prints a seam; quit unmounts;
+   * onboarding enters the wizard mode that owns the input line until exit). */
+  action?: 'seal' | 'quit' | 'onboarding';
 }
 
 export interface Command {
@@ -105,6 +107,11 @@ export const COMMANDS: Command[] = [
       const h = await api.health();
       return { panel: { type: 'health', ...h, baseUrl } };
     },
+  },
+  {
+    name: 'onboarding',
+    description: 'guided setup — persona, team, sources, schedule…',
+    run: async () => ({ action: 'onboarding' }),
   },
   {
     name: 'new',

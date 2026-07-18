@@ -5,6 +5,12 @@ import type {
   ChatTurn,
   ConfigFileName,
   Interaction,
+  McpProbeResponse,
+  McpServerAnswer,
+  OnboardingApplyRequest,
+  OnboardingApplyResponse,
+  OnboardingPreviewResponse,
+  OnboardingState,
   PendingAction,
   PendingActionStatus,
   Person,
@@ -73,7 +79,8 @@ export interface TaskActionBody {
 }
 
 export const api = {
-  health: () => req<{ ok: boolean; version: string; mode: string; dbPath: string }>('GET', '/api/health'),
+  health: () =>
+    req<{ ok: boolean; version: string; mode: string; dbPath: string; onboarded?: boolean }>('GET', '/api/health'),
 
   // Chat
   // `beforeId` (the boundary row's id from the previous page) turns `before`
@@ -138,4 +145,12 @@ export const api = {
   settings: () => req<{ settings: Record<string, unknown> }>('GET', '/api/settings'),
   patchSettings: (patch: Record<string, unknown>) =>
     req<{ settings: Record<string, unknown> }>('PUT', '/api/settings', { patch }),
+
+  // Onboarding wizard (docs/specs/onboarding.md)
+  onboarding: () => req<OnboardingState>('GET', '/api/onboarding'),
+  onboardingPreview: (body: OnboardingApplyRequest) =>
+    req<OnboardingPreviewResponse>('POST', '/api/onboarding/preview', body),
+  onboardingApply: (body: OnboardingApplyRequest) =>
+    req<OnboardingApplyResponse>('POST', '/api/onboarding/apply', body),
+  mcpProbe: (server: McpServerAnswer) => req<McpProbeResponse>('POST', '/api/onboarding/mcp-probe', { server }),
 };

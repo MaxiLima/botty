@@ -322,6 +322,11 @@ export function Welcome({ panel }: { panel: Extract<PanelData, { type: 'welcome'
         <Text dimColor>
           type <Text color="cyan">/help</Text> for commands — or just say hi
         </Text>
+        {!panel.onboarded && (
+          <Text dimColor>
+            first run — type <Text color="cyan">/onboarding</Text> to set things up
+          </Text>
+        )}
       </Box>
     </Box>
   );
@@ -372,6 +377,26 @@ export function Panel({ panel, columns }: { panel: PanelData; columns: number })
       return (
         <Frame title={`config — ${panel.name} (read-only here)`}>
           <Text>{renderMarkdown(panel.content, width)}</Text>
+        </Frame>
+      );
+    case 'onboardingReview':
+      return (
+        <Frame title="setup review — files to be written">
+          {panel.files.map((f, i) => (
+            <Box key={f.name} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
+              <Text>
+                <Text bold color="magenta">
+                  {f.name}
+                </Text>{' '}
+                {f.changed ? <Text color="yellow">changed</Text> : <Text color="green">unchanged</Text>}
+              </Text>
+              {f.changed ? (
+                <Text>{renderMarkdown('```\n' + f.content + '\n```', width)}</Text>
+              ) : (
+                <Text dimColor>· identical to the current file ·</Text>
+              )}
+            </Box>
+          ))}
         </Frame>
       );
     case 'health':

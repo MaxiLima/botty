@@ -22,6 +22,19 @@ import {
   type PendingTurn,
 } from './transcript.js';
 import { startWs, useOnReconnect, useWsEvent, useWsStatus } from './ws.js';
+import {
+  buildApplyRequest,
+  currentQuestion,
+  initWizard,
+  maskMcpJson,
+  needsPreview,
+  progressLabel,
+  reopenReview,
+  setPreview,
+  wizardReduce,
+  type Question,
+  type WizardState,
+} from './onboarding.js';
 
 type ItemBody =
   | { kind: 'turn'; turn: ChatTurn }
@@ -95,7 +108,12 @@ export function App({ config }: { config: TuiConfig }) {
    * same turn render as a quiet notice instead of the raw SDK diagnostic. */
   const interruptedRef = useRef(new Set<string>());
 
-  const menu = draft.startsWith('/') ? filterCommands(draft) : [];
+  /** Non-null while the /onboarding wizard owns the input line (specs/onboarding.md §TUI). */
+  const [wizard, setWizard] = useState<WizardState | null>(null);
+  const wizardRef = useRef(wizard);
+  wizardRef.current = wizard;
+
+  const menu = !wizard && draft.startsWith('/') ? filterCommands(draft) : [];
   const menuOpen = menu.length > 0;
   const selected = Math.min(menuIndex, Math.max(0, menu.length - 1));
 
@@ -171,7 +189,15 @@ export function App({ config }: { config: TuiConfig }) {
       setTaskCount(taskCount);
       pushItem({
         kind: 'panel',
-        panel: { type: 'welcome', version: h.version, mode: h.mode, baseUrl: config.baseUrl, taskCount },
+        panel: {
+          type: 'welcome',
+          version: h.version,
+          mode: h.mode,
+          baseUrl: config.baseUrl,
+          taskCount,
+          // Treat a missing field (older agent) as onboarded — never nag against it.
+          onboarded: h.onboarded !== false,
+        },
       });
       if (tRes.status === 'rejected') {
         pushItem({ kind: 'info', text: "couldn't load tasks — showing an empty board" });
@@ -360,6 +386,112 @@ export function App({ config }: { config: TuiConfig }) {
     [api, pending, refreshHistory],
   );
 
+  // ---------- onboarding wizard mode ----------
+
+  const exitWizard = useCallback((text: string) => {
+    setWizard(null);
+    setDraft('');
+    setInputEpoch((e) => e + 1);
+    pushItem({ kind: 'info', text });
+  }, [pushItem]);
+
+  /** Route one event through the pure reducer, then act on any terminal state. */
+  const dispatchWizard = useCallback(
+    (ev: Parameters<typeof wizardReduce>[1]) => {
+      const cur = wizardRef.current;
+      if (!cur) return;
+      const next = wizardReduce(cur, ev);
+      if (!next.done) {
+        setWizard(next);
+        return;
+      }
+      if (next.done.outcome === 'abandon') {
+        exitWizard('setup abandoned — nothing written');
+        return;
+      }
+      if (next.done.outcome === 'noop') {
+        exitWizard('setup closed — no steps confirmed, nothing written');
+        return;
+      }
+      const request = buildApplyRequest(next);
+      if (!request) {
+        exitWizard('setup closed — no steps confirmed, nothing written');
+        return;
+      }
+      setWizard(next); // freeze input while the apply is in flight
+      void api
+        .onboardingApply(request)
+        .then((res) => {
+          const warnings = Object.entries(res.warnings).flatMap(([file, ws]) =>
+            ws.map((w) => `${file}: ${w}`),
+          );
+          exitWizard(
+            `setup applied (${request.steps.join(', ')}) — config hot-reloaded, previous versions in config/archive/`,
+          );
+          for (const w of warnings) pushItem({ kind: 'info', text: `⚠ ${w}` });
+        })
+        .catch((err) => {
+          pushItem({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+          setWizard((w) => (w ? reopenReview(w) : w));
+        });
+    },
+    [api, exitWizard, pushItem],
+  );
+
+  const enterWizard = useCallback(async () => {
+    const st = await api.onboarding(); // runCommand catches a throw here
+    setWizard(initWizard(st));
+  }, [api]);
+
+  // Text questions answer via the composer with the prefill pre-typed — Enter
+  // keeps it. Re-key the draft on every question change (and remount the input:
+  // a programmatic draft change leaves ink-text-input's cursor stale, see the
+  // Tab-completion note below).
+  const wizardQ = wizard ? currentQuestion(wizard) : null;
+  const wizardQKey = wizard && wizardQ ? `${wizardQ.id}:${wizard.stepIndex}:${wizard.qIndex}:${wizard.sub?.qIndex ?? -1}` : null;
+  useEffect(() => {
+    if (wizardQKey === null) return;
+    const q = wizardRef.current ? currentQuestion(wizardRef.current) : null;
+    setDraft(q?.kind === 'text' ? q.prefill : '');
+    setInputEpoch((e) => e + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizardQKey]);
+
+  // Review step: fetch the server-rendered preview once, print it as a panel
+  // (env values masked in mcp.json), then the confirm question unlocks.
+  useEffect(() => {
+    if (!wizard || !needsPreview(wizard)) return;
+    const request = buildApplyRequest(wizard);
+    if (!request) return;
+    let cancelled = false;
+    void api
+      .onboardingPreview(request)
+      .then((preview) => {
+        if (cancelled) return;
+        pushItem({
+          kind: 'panel',
+          panel: {
+            type: 'onboardingReview',
+            files: Object.entries(preview.files).map(([name, f]) => ({
+              name,
+              content: name === 'mcp' ? maskMcpJson(f.content) : f.content,
+              changed: f.changed,
+            })),
+          },
+        });
+        setWizard((w) => (w ? setPreview(w, preview) : w));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        pushItem({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+        setWizard((w) => (w ? wizardReduce(w, { type: 'key', key: 'esc' }) : w));
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizard && needsPreview(wizard)]);
+
   const runCommand = useCallback(
     async (cmd: Command, arg: string) => {
       setDraft('');
@@ -381,17 +513,24 @@ export function App({ config }: { config: TuiConfig }) {
         // when the next turn arrives with a fresh sessionId.
         if (res.action === 'seal') pushItem({ kind: 'info', text: 'context sealed — next message starts fresh' });
         if (res.action === 'quit') exit();
+        if (res.action === 'onboarding') await enterWizard();
       } catch (err) {
         pushItem({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
       } finally {
         setBusyCmd(null);
       }
     },
-    [api, config.baseUrl, exit, pushItem],
+    [api, config.baseUrl, enterWizard, exit, pushItem],
   );
 
   const submit = useCallback(
     (value: string) => {
+      // Wizard mode owns the composer: Enter submits the current text answer
+      // verbatim (the prefill unedited = keep the current value).
+      if (wizardRef.current) {
+        dispatchWizard({ type: 'submit', text: value });
+        return;
+      }
       const text = value.trim();
       if (!text) return;
       // Only an unindented "/" is a command — a leading space escapes to chat.
@@ -411,10 +550,28 @@ export function App({ config }: { config: TuiConfig }) {
       }
       void runCommand(cmd, parsed?.arg ?? '');
     },
-    [menu, pushItem, runCommand, selected, send],
+    [dispatchWizard, menu, pushItem, runCommand, selected, send],
   );
 
-  useInput((_input, key) => {
+  useInput((input, key) => {
+    // Wizard mode intercepts first — it owns the input line until exit.
+    if (wizardRef.current) {
+      const w = wizardRef.current;
+      if (w.done?.outcome === 'apply') return; // frozen while the apply POST is in flight
+      if (key.escape) {
+        dispatchWizard({ type: 'key', key: 'esc' });
+        return;
+      }
+      const q = currentQuestion(w);
+      if (q && q.kind !== 'text') {
+        // Composer is hidden for these — letters are wizard keys (y/n, a/e/d).
+        if (key.upArrow) dispatchWizard({ type: 'key', key: 'up' });
+        else if (key.downArrow) dispatchWizard({ type: 'key', key: 'down' });
+        else if (key.return) dispatchWizard({ type: 'key', key: 'enter' });
+        else if (input) dispatchWizard({ type: 'key', key: input.toLowerCase() });
+      }
+      return; // text questions: the composer handles typing + Enter
+    }
     if (menuOpen && key.upArrow) setMenuIndex((i) => (i + menu.length - 1) % menu.length);
     else if (menuOpen && key.downArrow) setMenuIndex((i) => (i + 1) % menu.length);
     else if (menuOpen && key.tab) {
@@ -445,10 +602,18 @@ export function App({ config }: { config: TuiConfig }) {
     taskCount !== null ? `${taskCount} task${taskCount === 1 ? '' : 's'}` : null,
     hint ? `◔ ${hint}` : null,
     approvalIds.size > 0 ? `⧗ ${approvalIds.size} approval${approvalIds.size === 1 ? '' : 's'}` : null,
-    busyCmd ? `✳ /${busyCmd}…` : pending ? `✳ ${elapsed}s · esc interrupts` : '/help',
+    wizard
+      ? `✎ setup ${progressLabel(wizard)} · esc backs up`
+      : busyCmd
+        ? `✳ /${busyCmd}…`
+        : pending
+          ? `✳ ${elapsed}s · esc interrupts`
+          : '/help',
   ]
     .filter(Boolean)
     .join(' · ');
+
+  const composerVisible = !wizard || wizardQ?.kind === 'text';
 
   return (
     <Box flexDirection="column">
@@ -457,21 +622,30 @@ export function App({ config }: { config: TuiConfig }) {
       </Static>
       {pending && <PendingView pending={pending} />}
       {sendError && <Text color="red">✗ {sendError}</Text>}
-      <Box borderStyle="round" borderColor={pending ? 'yellow' : 'gray'} paddingX={1}>
-        <Text color="magenta" bold>
-          ›{' '}
-        </Text>
-        <TextInput
-          key={inputEpoch}
-          value={draft}
-          onChange={(v) => {
-            setDraft(normalizePastedInput(v));
-            setMenuIndex(0);
-          }}
-          onSubmit={submit}
-          placeholder={pending ? 'streaming — Esc to interrupt' : 'message botty, or / for commands'}
-        />
-      </Box>
+      {wizard && wizardQ && <WizardView state={wizard} q={wizardQ} />}
+      {composerVisible && (
+        <Box borderStyle="round" borderColor={wizard ? 'magenta' : pending ? 'yellow' : 'gray'} paddingX={1}>
+          <Text color="magenta" bold>
+            ›{' '}
+          </Text>
+          <TextInput
+            key={inputEpoch}
+            value={draft}
+            onChange={(v) => {
+              setDraft(wizard ? v : normalizePastedInput(v));
+              setMenuIndex(0);
+            }}
+            onSubmit={submit}
+            placeholder={
+              wizard
+                ? 'enter keeps the shown value'
+                : pending
+                  ? 'streaming — Esc to interrupt'
+                  : 'message botty, or / for commands'
+            }
+          />
+        </Box>
+      )}
       {menuOpen && (
         <Box flexDirection="column" paddingLeft={2}>
           {(() => {
@@ -589,6 +763,55 @@ function TranscriptItem({ item, columns }: { item: Item; columns: number }) {
       );
     }
   }
+}
+
+/** The wizard's live question region — rendered above the composer while active. */
+function WizardView({ state, q }: { state: WizardState; q: Question }) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
+      <Text color="magenta" bold>
+        ✎ setup <Text dimColor>{progressLabel(state)}</Text>
+      </Text>
+      {q.kind === 'info' && (
+        <>
+          <Text bold>{q.title}</Text>
+          {q.lines.map((l, i) => (
+            <Text
+              key={i}
+              color={l.includes('MISSING') ? 'red' : l.startsWith('⚠') ? 'yellow' : undefined}
+              dimColor={!l.includes('MISSING') && !l.startsWith('⚠')}
+            >
+              {'  '}
+              {l}
+            </Text>
+          ))}
+        </>
+      )}
+      {q.kind !== 'info' && <Text>{q.prompt}</Text>}
+      {q.kind === 'select' &&
+        q.options.map((option, i) => (
+          <Text key={option} color={i === state.selIndex ? 'magenta' : undefined} dimColor={i !== state.selIndex}>
+            {i === state.selIndex ? '▸ ' : '  '}
+            {option}
+          </Text>
+        ))}
+      {q.kind === 'list' && q.items.length === 0 && <Text dimColor>{'  '}(empty)</Text>}
+      {q.kind === 'list' &&
+        q.items.map((item, i) => (
+          <Text
+            key={`${i}-${item}`}
+            color={i === state.listCursor ? 'magenta' : undefined}
+            dimColor={i !== state.listCursor}
+          >
+            {i === state.listCursor ? '▸ ' : '  '}
+            {item}
+          </Text>
+        ))}
+      {state.error && <Text color="red">✗ {state.error}</Text>}
+      {q.hint !== undefined && <Text dimColor>{q.hint}</Text>}
+      {state.done?.outcome === 'apply' && <Text dimColor>applying…</Text>}
+    </Box>
+  );
 }
 
 function PendingView({ pending }: { pending: PendingTurn }) {

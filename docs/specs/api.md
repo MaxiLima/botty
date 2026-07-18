@@ -7,7 +7,9 @@ camelCase everywhere.
 ## REST
 
 ```
-GET  /api/health                → { ok, version, mode, dbPath }
+GET  /api/health                → { ok, version, mode, dbPath, schedule, onboarded }
+                                    (onboarded = the onboarding.completedAt settings key
+                                    exists — first-run detection for both clients)
 
 # Chat
 GET  /api/chat/history?limit=&before=   → { turns: ChatTurn[], sessions: SessionMeta[] }
@@ -66,6 +68,19 @@ POST /api/actions/:id/approve   {} → { action }   (executes the tool via the a
                                     409 not pending or an approve already in flight for this id)
 POST /api/actions/:id/dismiss   {} → { action }   (resolves to dismissed, never calls the tool;
                                     same 404/409 semantics as approve)
+
+# Onboarding wizard (see specs/onboarding.md; schemas in shared api.ts)
+GET  /api/onboarding            → OnboardingState  { onboarded, completedAt, checks, prefill,
+                                    prefillWarnings, mtimes }
+POST /api/onboarding/preview    { answers, steps } → { files: { [name]: { content, current,
+                                    changed } }, settings? }   (renders only, writes nothing)
+POST /api/onboarding/apply      { answers, steps, mtimes? } → { ok, warnings: { [name]: [...] } }
+                                    (writes only steps-listed files via the config save path —
+                                    validate → archive → write → hot-reload; sets
+                                    onboarding.completedAt; llm.models via the directives step)
+POST /api/onboarding/mcp-probe  { server: McpServerConfig } → { ok, tools: string[], error? }
+                                    (spawns the server, tools/list, 10s timeout; failures come
+                                    back ok:false, never a 5xx)
 
 # Control
 POST /api/loop/run-now          {} → { tickId }

@@ -92,6 +92,7 @@ command). ↑↓ move, Tab completes, Enter runs. Passing an argument to a no-ar
 | `/config [persona\|team\|heartbeat]` | view a config file (default persona) |
 | `/costs` | LLM spend report (`GET /api/costs`): totals + byCategory/byModel breakdown |
 | `/health` | agent status, version, mode, db path |
+| `/onboarding` | guided setup wizard — see below |
 | `/new` | `POST /api/chat/seal` — next message starts fresh |
 | `/quit` | exit |
 
@@ -99,6 +100,14 @@ Panels are **read-only views**. Config editing, task actions, and full Inspector
 the web app — panels say so in their footers. Image attachments are web-only: an attachment-
 bearing turn renders as `⧉ N images (view in the web app)`; quoted replies show a dim `↩ preview`
 line.
+
+**`/onboarding` is the one deliberate write exception**: it enters a wizard mode that owns
+the input line until exit (question-at-a-time; per-step confirm/skip gates; Esc backs up,
+Esc at the first question offers abandon — abandoning writes nothing). The flow is a pure
+state machine in `onboarding.ts` (App.tsx is a thin shell); the review step prints an
+`onboardingReview` panel and one confirm drives `POST /api/onboarding/apply`. The welcome
+banner shows a `first run — type /onboarding to set things up` hint when `/api/health`
+reports `onboarded: false`. Contract: `specs/onboarding.md`.
 
 ## Statusline & keys
 

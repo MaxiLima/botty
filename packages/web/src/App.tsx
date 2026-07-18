@@ -2,7 +2,10 @@ import { useEffect } from 'react';
 import { navigate, useRoute, type Page } from './lib/router.js';
 import { startWs, useWsStatus } from './lib/ws.js';
 import {
+  dismissOnboardingBanner,
   initStores,
+  useOnboarded,
+  useOnboardingBannerDismissed,
   useOpenTaskCount,
   usePendingActionCount,
   useStoreRefetchOnReconnect,
@@ -14,6 +17,7 @@ import { PeoplePage } from './pages/PeoplePage.js';
 import { InspectorPage } from './pages/InspectorPage.js';
 import { CostsPage } from './pages/CostsPage.js';
 import { ConfigPage } from './pages/ConfigPage.js';
+import { OnboardingPage } from './pages/OnboardingPage/index.js';
 import './styles/shell.css';
 
 startWs();
@@ -35,6 +39,7 @@ const PAGE_TITLES: Record<Page, string> = {
   inspector: 'Inspector',
   costs: 'Costs',
   config: 'Config',
+  onboarding: 'Setup',
 };
 
 export function App() {
@@ -43,6 +48,8 @@ export function App() {
   const openCount = useOpenTaskCount();
   const unseen = useUnseenNotificationCount();
   const pendingApprovals = usePendingActionCount();
+  const onboarded = useOnboarded();
+  const bannerDismissed = useOnboardingBannerDismissed();
   useStoreRefetchOnReconnect();
 
   // Ctrl/Cmd+1..5 page switching.
@@ -62,6 +69,9 @@ export function App() {
   useEffect(() => {
     document.title = `botty · ${PAGE_TITLES[route].toLowerCase()}`;
   }, [route]);
+
+  // Full-width, sidebar-less wizard — the onboarding page owns its own chrome.
+  if (route === 'onboarding') return <OnboardingPage />;
 
   return (
     <div className="app-shell">
@@ -99,6 +109,23 @@ export function App() {
         </div>
       </aside>
       <main className="page-main">
+        {onboarded === false && !bannerDismissed && (
+          <div className="onboarding-banner">
+            <span className="onboarding-banner-text">
+              First run — botty is still on template config. Set up your persona, team and schedule.
+            </span>
+            <button className="btn btn-mini" onClick={() => navigate('onboarding')}>
+              Run setup
+            </button>
+            <button
+              className="icon-btn onboarding-banner-dismiss"
+              title="Dismiss"
+              onClick={dismissOnboardingBanner}
+            >
+              ✕
+            </button>
+          </div>
+        )}
         <header className="page-head">
           <h1>{PAGE_TITLES[route]}</h1>
         </header>

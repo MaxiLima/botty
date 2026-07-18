@@ -59,6 +59,15 @@ byModel table (priced vs unpriced-calls flag), plus a 30-day stacked daily chart
 Refetches on WS reconnect and — lightly debounced (1.5s) — on every `decision.recorded` event,
 since every LLM call broadcasts one.
 
+### Onboarding (`/onboarding`)
+Sidebar-less full-width wizard (early-returned before the shell in `App.tsx`): left step
+rail (Welcome · Persona · Team · Sources · MCP tools · Schedule · Directives · Review),
+Back/Skip/Next per step, server-rendered Review diffs (`POST /api/onboarding/preview`),
+one `POST /api/onboarding/apply`. Components in `pages/OnboardingPage/`, styles in
+`styles/onboarding.css`. Entry points: a dismissible first-run banner in the shell (shown
+when `GET /api/health` reports `onboarded: false`; dismissal persists in localStorage) and
+the Config page's "Run setup again" link. Full contract: `specs/onboarding.md`.
+
 ### Config
 One editor per file (persona/team/heartbeat): textarea (monospace) + Save with validation
 warnings surfaced; last-loaded timestamp; `config.changed` WS refreshes. `GET /api/config` also

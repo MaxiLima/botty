@@ -12,6 +12,14 @@ export type { ChecklistTask, HeartbeatConfig, TeamConfig, TeamMember } from './p
 export { checklistTaskId, parseHeartbeat, parseTeam } from './parse.js';
 export { EMPTY_MCP_CONFIG, McpConfigSchema, McpServerConfigSchema, McpToolModeSchema } from './mcp.js';
 export type { McpConfig, McpParseResult, McpServerConfig, McpToolMode } from './mcp.js';
+export {
+  answersFromConfig,
+  personaAnswersFromRaw,
+  renderHeartbeat,
+  renderMcp,
+  renderPersona,
+  renderTeam,
+} from './render.js';
 
 const DEBOUNCE_MS = 500;
 /** mcp.json is JSON, not markdown, so it's watched/loaded outside the CONFIG_FILE_NAMES trio. */
@@ -55,6 +63,15 @@ export interface ConfigManager {
   mcp(): McpConfig;
   /** Warnings for the current mcp.json content when it isn't what's being served. Null when clean. */
   mcpIssues(): ConfigIssues | null;
+  /** Raw mcp.json content on disk ('' when absent). */
+  mcpRaw(): string;
+  /**
+   * Same validate → archive → write → hot-reload path as save(), for mcp.json
+   * (archived as mcp-<ts>.json — added with the onboarding wizard; previously
+   * only the markdown trio was archived). Archive copies contain env secrets
+   * exactly as the live file does — same directory, same exposure.
+   */
+  saveMcp(content: string): { warnings: string[] };
   /**
    * Validate + snapshot the previous version to config/archive/ + write + hot-reload.
    * Returns parser warnings (never throws on content issues — config is forgiving).
@@ -235,6 +252,21 @@ export function createConfig(env: AgentEnv, db: Db, bus: Bus): ConfigManager {
     mcpIssues() {
       manager.mcp(); // ensure the current content has been evaluated
       return mcpPending;
+    },
+    mcpRaw() {
+      return mcpRaw;
+    },
+    saveMcp(content) {
+      const { warnings } = parseMcpConfig(content);
+      const previous = readMcpFile();
+      if (previous) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        fs.mkdirSync(env.configArchiveDir, { recursive: true });
+        fs.writeFileSync(path.join(env.configArchiveDir, `mcp-${ts}.json`), previous, 'utf8');
+      }
+      fs.writeFileSync(mcpFilePath, content, 'utf8');
+      if (loadMcp()) afterChange(MCP_KEY);
+      return { warnings };
     },
     save(name, content) {
       // Validate (parsers never throw; they collect warnings).

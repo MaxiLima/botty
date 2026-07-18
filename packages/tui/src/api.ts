@@ -9,6 +9,10 @@ import {
   type ConfigFileName,
   type CostsReport,
   type Interaction,
+  type OnboardingApplyRequest,
+  type OnboardingApplyResponse,
+  type OnboardingPreviewResponse,
+  type OnboardingState,
   type PendingAction,
   type PendingActionStatus,
   type Person,
@@ -92,10 +96,22 @@ export function createApi(baseUrl: string) {
 
   return {
     health: () =>
-      req<{ ok: boolean; version: string; mode: string; dbPath: string; schedule?: ScheduleInfo }>(
-        'GET',
-        '/api/health',
-      ),
+      req<{
+        ok: boolean;
+        version: string;
+        mode: string;
+        dbPath: string;
+        schedule?: ScheduleInfo;
+        /** Optional — older agents omit it (first-run detection, specs/onboarding.md). */
+        onboarded?: boolean;
+      }>('GET', '/api/health'),
+
+    // Onboarding wizard (docs/specs/onboarding.md)
+    onboarding: () => req<OnboardingState>('GET', '/api/onboarding'),
+    onboardingPreview: (body: OnboardingApplyRequest) =>
+      req<OnboardingPreviewResponse>('POST', '/api/onboarding/preview', body),
+    onboardingApply: (body: OnboardingApplyRequest) =>
+      req<OnboardingApplyResponse>('POST', '/api/onboarding/apply', body),
 
     // Chat
     chatHistory: (limit?: number, before?: string) =>

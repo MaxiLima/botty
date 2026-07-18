@@ -101,6 +101,81 @@ async function refetchPendingActions(): Promise<void> {
   }
 }
 
+// ---------- Onboarding (first-run banner) ----------
+
+/** null = unknown (health not fetched yet, or server predates the `onboarded` field). */
+let onboarded: boolean | null = null;
+const onboardedSubs = new Set<() => void>();
+
+function emitOnboarded(): void {
+  for (const cb of onboardedSubs) cb();
+}
+
+export function useOnboarded(): boolean | null {
+  return useSyncExternalStore(
+    (cb) => {
+      onboardedSubs.add(cb);
+      return () => onboardedSubs.delete(cb);
+    },
+    () => onboarded,
+  );
+}
+
+/** Called after a successful onboarding apply — hides the first-run banner everywhere. */
+export function markOnboarded(): void {
+  if (onboarded === true) return;
+  onboarded = true;
+  emitOnboarded();
+}
+
+const BANNER_DISMISSED_KEY = 'botty.onboardingBannerDismissed';
+
+function readBannerDismissed(): boolean {
+  try {
+    return localStorage.getItem(BANNER_DISMISSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+let bannerDismissed = readBannerDismissed();
+const bannerSubs = new Set<() => void>();
+
+export function useOnboardingBannerDismissed(): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      bannerSubs.add(cb);
+      return () => bannerSubs.delete(cb);
+    },
+    () => bannerDismissed,
+  );
+}
+
+export function dismissOnboardingBanner(): void {
+  if (bannerDismissed) return;
+  bannerDismissed = true;
+  try {
+    localStorage.setItem(BANNER_DISMISSED_KEY, '1');
+  } catch {
+    // storage unavailable — in-memory dismissal still holds for this session
+  }
+  for (const cb of bannerSubs) cb();
+}
+
+async function fetchOnboarded(): Promise<void> {
+  try {
+    const health = await api.health();
+    // Don't clobber a markOnboarded() that raced ahead of this fetch; an absent
+    // field (server change not landed yet) keeps the store at null = unknown.
+    if (onboarded === null && typeof health.onboarded === 'boolean') {
+      onboarded = health.onboarded;
+      emitOnboarded();
+    }
+  } catch {
+    // agent unreachable — stay unknown, banner stays hidden
+  }
+}
+
 // ---------- Open task count (sidebar badge) ----------
 
 let openCount: number | null = null;
@@ -191,4 +266,5 @@ export function initStores(): void {
 
   void refetchOpenCount();
   void refetchPendingActions();
+  void fetchOnboarded();
 }
