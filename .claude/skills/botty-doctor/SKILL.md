@@ -1,9 +1,9 @@
 ---
-name: doctor
+name: botty-doctor
 description: Diagnose botty misbehavior and turn the finding into a sanitized GitHub issue on MaxiLima/botty. Use whenever the user reports the app doing something wrong or unexpected ("botty didn't nudge me about X", "why did it classify/skip/duplicate...", "notifications stopped", "the agent feels broken"), asks to troubleshoot/diagnose the running instance, or says "file a finding", "report this", "create an issue for this". Covers the whole pipeline — ingestion, classification/extraction, proactive loop, judgment, notifications, chat, config.
 ---
 
-# doctor — diagnose the running app, file the finding
+# botty-doctor — diagnose the running app, file the finding
 
 Diagnose against the instance the user is actually running (default: the **live**
 agent on `http://127.0.0.1:4820`), then file a sanitized issue so the fix can happen
