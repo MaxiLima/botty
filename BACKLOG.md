@@ -108,7 +108,9 @@ section below).
    reach claude.ai MCP connectors from a headless daemon session — this decides the design.
    Everything downstream (raw log, dedup, funnel) is mode-agnostic and stays as is.
 2. **Run as a service.** launchd agents for botty (and optionally the sim in dev): start at
-   login, restart on crash, logs to `~/.botty/logs/`. Today it's two hand-started processes.
+   login, restart on crash, logs to `~/.botty/logs/`. Today it's two hand-started processes
+   (or `botty start` — the 2026-07-18 CLI, `docs/specs/cli.md`; `botty serve` is the
+   foreground entry point a launchd unit should run).
 3. **Nightly backups.** `VACUUM INTO ~/.botty/backups/botty-<ts>.db`, keep 14. The DB is about
    to hold real data.
 4. **Remaining M4 intelligence:** cadence drift (CRITICAL person gone quiet vs declared
@@ -130,6 +132,19 @@ section below).
      replies ("review done"), ingested via the new `direction` field on SourceEvent. Note for
      the M4 real drivers: the Slack/Gmail `fetch()` must emit the user's own sent messages as
      `direction: 'outbound'` events, or the sweep loses its best signal.
+
+6. **Backfill** — **shipped 2026-07-24** (`docs/specs/backfill.md`): one-shot, manual,
+   context-only historical ingest (`botty backfill`, REST `/api/backfill/*`). Adapter
+   contract gained optional `fetchHistory` (paged, newest-first; sim serves a scenario
+   `history` block via `GET /:source/history`; real = M4 stub). Deterministic layer:
+   raw_log (marked `meta.backfill`), people discovery, interactions with true
+   `occurred_at`, calendar upserts, FTS. Bounded LLM distillation (`distill` kind,
+   `backfill` cost category, cap + resume via `distilledAt` stamps): decisions with
+   `#bf` refs + discovered-people notes — never tasks. Resolution sweep now filters
+   backfilled rows out of evidence (old completion phrases can't auto-close live
+   tasks). Sources: slack/gmail/gcal; jira/github excluded (task-creating), Drive =
+   future. M4 note: real drivers should implement `fetchHistory` with the provider's
+   native paging (Slack cursor / Gmail pageToken).
 
 ## P1 — tests
 
@@ -248,8 +263,15 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
   `proactive_log` and interleave into chat history. (Approval cards partially share this:
   resolved ones persist in `pending_actions` but the web store only hydrates `pending` on
   load, so resolved cards vanish on reload too.)
-- **mcp.json has no UI**: hand-edit only (hot reload + `issues.mcp` catch mistakes). A
-  Config-page editor with the same validate-on-save flow as the markdown files would fit.
+- **mcp.json has no UI**: hand-edit only (hot reload + `issues.mcp` catch mistakes), plus
+  `botty mcp list`/`botty mcp import` (2026-07-20) which discover and copy stdio servers
+  from the local Claude Code config (docs/specs/cli.md "MCP import"). A Config-page editor
+  with the same validate-on-save flow as the markdown files would fit.
+- **Onboarding MCP step: prefill from Claude Code** (2026-07-20): the wizard's MCP step
+  (docs/specs/onboarding.md step 5) could offer the servers `botty mcp list` finds as
+  pickable prefill instead of blank JSON — reuse `discoverClaudeServers` from
+  `packages/cli/src/claude-mcp.ts` (move it somewhere shared), surface it via the
+  `GET /api/onboarding` prefill, and keep the same default-deny + probe flow.
 - **No MCP server status visibility** (2026-07-18): nothing in the web UI or TUI shows
   whether a configured MCP server is actually reachable, what tools its `tools/list`
   advertised vs what the allowlist names (a typo'd tool name silently degrades to the
@@ -259,6 +281,14 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
   probe time/error, advertised tools with allowlisted/unlisted markers. The
   `POST /api/onboarding/mcp-probe` endpoint from `docs/specs/onboarding.md` step 5 is the
   same probe — build it once and reuse it here.
+- **mcp-probe orphans shell-chained server grandchildren** (2026-07-20, found verifying
+  `botty mcp import --probe`): `POST /api/onboarding/mcp-probe`'s `closeAll()` kills the
+  spawned command, but a server whose command is a wrapper running a shell chain (the
+  plugin pattern `bun run start` → `bun install && bun server.ts`) leaves the grandchild
+  alive and orphaned to launchd — this is exactly how a stale fakechat held port 8787 for
+  months. Fix in `mcp/connections.ts`/the probe: spawn detached into its own process
+  group and signal the group (`kill(-pid)`) on close. Affects the onboarding wizard's
+  probe and `botty mcp import --probe` equally.
 - **JSON-Schema→zod converter is best-effort** (`mcp/schema.ts`): flat schemas convert
   fully; nested/exotic constructs degrade to permissive `z.unknown()` with the raw schema
   embedded in the tool description. Tighten per-construct as real MCP servers surface gaps.
@@ -322,6 +352,14 @@ than fixes (the fixable findings were addressed in the same-day fix sweep):
 
 ## P3 — later / ideas
 
+- **CLI phase 2 — publishable npm package** (deferred 2026-07-18 when phase 1 shipped,
+  `docs/specs/cli.md`): bundle agent+tui+sim+cli via tsup into one `botty` package so
+  `npm install -g botty` works without the repo — ship web `dist` + SQL migrations +
+  config templates as package assets, make the three `import.meta.url` asset resolutions
+  overridable (`agent/src/server/index.ts` webDistDir, `shared/src/migrations.ts`,
+  `agent/src/env.ts` templatesDir), keep `better-sqlite3` as the only native dep. Gated
+  on real mode existing — until then a publish would ship a demo. No single-binary
+  (Node SEA/bun): the native sqlite addon makes it painful for no gain.
 - Settings UI page (model overrides per task exist in the API, no UI).
 - Weekend/holiday awareness beyond active_days (holiday calendar).
 - Menu-bar presence via a thin Tauri wrapper.

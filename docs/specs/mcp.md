@@ -131,3 +131,35 @@ event's optional `warnings` field when a reload fires with a bad file. `parseMcp
 throws: invalid JSON or a shape that fails validation comes back as `{ config: EMPTY_MCP_CONFIG,
 warnings: [...] }` with one warning per zod issue (`path: message`), never a field value (secrets
 in `env` are never logged even in a warning).
+
+## Importing from Claude Code (`botty mcp import`)
+
+Users who already run MCP servers in Claude Code don't have to re-declare them:
+`botty mcp list` discovers the servers configured in the local Claude Code
+installation (user scope in `~/.claude.json`, the cwd project's `.mcp.json`,
+enabled plugins' `.mcp.json` manifests, enterprise managed settings) and
+`botty mcp import` copies the stdio ones into `~/.botty/config/mcp.json` —
+sources, precedence, placeholder expansion, and merge rules are specified in
+`docs/specs/cli.md` ("MCP import"). Remote (`sse`/`http`) servers are skipped
+(stdio-only v1), and claude.ai connectors (Gmail/Drive/Calendar) are not
+importable at all: their auth lives in the claude.ai platform, there is
+nothing local to run.
+
+Imports are **default-deny by design**: entries land with `tools: {}`, and per
+the allowlist semantics above a server with an empty allowlist is never
+spawned. That matters because botty running "the same" server as Claude Code
+means a **second independent instance** of it (stdio MCP connections cannot be
+shared), and some servers are single-consumer: the telegram plugin, for
+example, holds Telegram's one `getUpdates` polling slot per bot token and
+kills any previous holder on startup — a second instance takes down the
+Claude Code session's one. So merely importing is always safe; the deliberate,
+warned step is connecting: `--probe` (which reuses `POST
+/api/onboarding/mcp-probe` to spawn once and list tools, writing them as
+`action` so every call stays consent-gated) or hand-editing the allowlist.
+Single-consumer servers need their own credentials/ports (e.g. a separate
+Telegram bot token via the entry's `env`) before enabling tools in botty.
+
+The import writes `mcp.json` directly (archiving the previous revision like
+`saveMcp` does) and the config watcher hot-reloads it; a broken existing file
+refuses the import rather than clobbering what the agent may still be serving
+as last-known-good.

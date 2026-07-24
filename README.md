@@ -34,6 +34,31 @@ Then in the sim panel (`:4821`): load the `workweek` scenario → Advance 120 mi
 In the app (`:4820`): Inspector → Sources → check-now, watch tasks appear, run a tick,
 chat about what's on your plate.
 
+## The `botty` CLI
+
+One installable command wraps all of the above (spec: `docs/specs/cli.md`):
+
+```sh
+npm link -w @botty/cli   # once — links the global `botty` bin (undo: npm unlink -g @botty/cli)
+
+botty start              # boot sim + agent detached (builds the web UI if missing), print the URL
+botty tui                # attach the terminal client (starts the daemon if needed)
+botty open               # open the web app in the browser (aliases: gui, web)
+botty status             # pid/port/ownership + agent health, sim state
+botty logs -f            # tail the agent log (`botty logs sim` for the sim)
+botty stop               # stop what botty started — never touches processes it doesn't own
+botty serve              # run the agent in the foreground (for launchd/systemd)
+botty doctor             # check node, web build, agent health, notifier, LLM auth
+botty backfill           # one-shot historical ingest — context only, never tasks (docs/specs/backfill.md)
+botty update             # pull the latest version (ff-only), rebuild if needed, restart
+
+```
+
+`--port/--sim-port/--data-dir/--mock-llm` override the env vars below; `start` is
+idempotent and pidfile-safe — a hand-started `npm run dev:agent` on the same port is
+detected as a foreign instance, reused, and never killed. Dev tooling stays in npm
+scripts (`sandbox`, `timewarp`, `replay`).
+
 ## LLM auth
 
 botty talks to Claude through the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`), not a
@@ -91,7 +116,8 @@ attachments aren't supported in the terminal.
 
 Config lives in `~/.botty/config/`: `persona.md`, `team.md`, `heartbeat.md`, and `mcp.json`
 (external MCP servers/tools + the consent gate — `docs/specs/mcp.md`) — editable in the app's
-Config page (mcp.json is edited on disk), hot-reloaded. Every AI decision (funnel
+Config page (mcp.json is edited on disk), hot-reloaded. MCP servers you already run in Claude
+Code can be copied in with `botty mcp import` (default-deny; see `docs/specs/mcp.md`). Every AI decision (funnel
 classifications, extractions, tick judgments) is recorded and browsable in the Inspector, and
 replayable via the CLI above.
 
@@ -107,5 +133,6 @@ recipes — notification troubleshooting is in §1) · `BACKLOG.md` (prioritized
 - `packages/agent` — the daemon: db, config, memory, LLM layer, ingestion funnel, proactive loop, HTTP/WS server
 - `packages/web` — React SPA (Chat · Tasks · People · Inspector · Costs · Config)
 - `packages/tui` — Ink terminal chat client (`npm run dev:tui`, or the `botty-tui` bin)
+- `packages/cli` — the `botty` bin: daemon lifecycle + client launchers (`docs/specs/cli.md`)
 - `packages/sim` — source simulator + scenario engine (`scenarios/workweek.json`)
 - `docs/` — spec suite (`SPEC.md` + `docs/specs/*`); predecessor spec in `botito-spec.md`
