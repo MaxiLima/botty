@@ -1,0 +1,344 @@
+{
+  "name": "backfill",
+  "description": "Historical-only scenario for the backfill feature (docs/specs/backfill.md). Empty live timeline; a 30-day `history` block with decision threads (distillation targets), recurring people (interaction counts), past calendar events, chatter (prefilter skips), and one completed thread (sweep-guard probe). Everything is served via GET /:source/history, never clock-released.",
+  "people": [
+    { "name": "Marian", "slackHandle": "@marian", "email": "marian@acme.example" },
+    { "name": "Sofi", "slackHandle": "@sofi", "email": "sofi@acme.example" },
+    { "name": "Diego", "slackHandle": "@diego", "email": "diego@acme.example" },
+    { "name": "Caro", "slackHandle": "@caro", "email": "caro@acme.example" },
+    { "name": "Rodrigo", "slackHandle": "@rodrigo", "email": "rodrigo@acme.example" },
+    { "name": "Fer", "slackHandle": "@fer", "email": "fer@vendorpay.io" }
+  ],
+  "events": [],
+  "history": [
+    {
+      "atMinute": -40320,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Team — estamos evaluando VendorPay vs PayShield para el corredor MX. Diego, can you share the latency benchmarks?",
+      "threadRef": "H-vendor-mx"
+    },
+    {
+      "atMinute": -40260,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "Benchmarks attached — VendorPay p99 is 40% lower and their MX acquirer coverage is wider.",
+      "threadRef": "H-vendor-mx"
+    },
+    {
+      "atMinute": -40200,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Ok, we decided: going with VendorPay for the MX corridor. Fer will send the contract this week.",
+      "threadRef": "H-vendor-mx"
+    },
+    {
+      "atMinute": -40100,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "fer@vendorpay.io", "displayName": "Fer Ruiz (VendorPay)" },
+      "text": "Subject: VendorPay — MX corridor contract\n\nHola Maxo! Great news about the decision. Attaching the draft contract for the MX corridor integration. Let me know quién lo firma del lado de Acme.",
+      "threadRef": "H-vendorpay-contract"
+    },
+    {
+      "atMinute": -39000,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "jajaja el meme del standup de hoy 😂😂"
+    },
+    {
+      "atMinute": -37440,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "Fraud squad — sprint planning",
+      "meta": {
+        "startAtMinute": -37380,
+        "durationMin": 60,
+        "attendees": ["marian@acme.example", "sofi@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "location": "Sala Ombú / Meet"
+      }
+    },
+    {
+      "atMinute": -36000,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "caro@acme.example", "displayName": "Caro Méndez" },
+      "text": "Subject: Q1 fraud postmortem deck\n\nMaxo, can you send me the Q1 postmortem deck? La necesito para la retro del jueves.",
+      "threadRef": "H-q1-postmortem"
+    },
+    {
+      "atMinute": -35900,
+      "source": "gmail",
+      "kind": "email",
+      "direction": "outbound",
+      "actor": { "email": "yo@maxolabs.io", "displayName": "Maxo" },
+      "text": "Subject: Re: Q1 fraud postmortem deck\n\nDone — just sent it over, tiene los números de BR y AR del Q1. Avisame si falta algo.",
+      "threadRef": "H-q1-postmortem"
+    },
+    {
+      "atMinute": -35800,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "caro@acme.example", "displayName": "Caro Méndez" },
+      "text": "Subject: Re: Q1 fraud postmortem deck\n\nGenial, gracias! Con esto cierro la agenda de la retro.",
+      "threadRef": "H-q1-postmortem"
+    },
+    {
+      "atMinute": -34560,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "FYI: la deploy window de checkout pasa a los martes 14:00 desde la semana que viene.",
+      "threadRef": "C-checkout-eng"
+    },
+    {
+      "atMinute": -33000,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@rodrigo", "displayName": "Rodrigo Farías" },
+      "text": "Maxo, te paso el dashboard nuevo de chargebacks: https://metrics.acme.example/d/cb-latam"
+    },
+    {
+      "atMinute": -30240,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "caro@acme.example", "displayName": "Caro Méndez" },
+      "text": "Q1 fraud retro",
+      "meta": {
+        "startAtMinute": -30180,
+        "durationMin": 45,
+        "attendees": ["caro@acme.example", "marian@acme.example", "yo@maxolabs.io"],
+        "location": "Meet"
+      }
+    },
+    {
+      "atMinute": -28800,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "Velocity rule R-77 sigue dando falsos positivos en BR — propongo subir el cap a 3 tx/min con ventana de 5.",
+      "threadRef": "H-r77-tuning"
+    },
+    {
+      "atMinute": -28740,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Revisé los datos — agreed to cap R-77 at 3 tx/min, ventana de 5 minutos. Diego owns the rollout.",
+      "threadRef": "H-r77-tuning"
+    },
+    {
+      "atMinute": -28700,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "Perfecto, lo despliego mañana con feature flag.",
+      "threadRef": "H-r77-tuning"
+    },
+    {
+      "atMinute": -27360,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "newsletter@acme.example", "displayName": "Acme Engineering Weekly" },
+      "text": "Subject: Acme Engineering Weekly #198\n\nEsta semana: el equipo de Shipping migró a la nueva cola, GPUs nuevas en Fury, y charlas del tech summit."
+    },
+    {
+      "atMinute": -25920,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "che viste que se cayó el wifi del piso 3 de nuevo 🙄"
+    },
+    {
+      "atMinute": -24480,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Maxo — heads up: el director quiere un update mensual de fraude LATAM. Lo armamos juntos el lunes?"
+    },
+    {
+      "atMinute": -23040,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "rodrigo@acme.example", "displayName": "Rodrigo Farías" },
+      "text": "Subject: Alertas de chargebacks BR\n\nConfiguré las alertas nuevas del dashboard, umbral 0.9%. Cualquier cosa me avisás.",
+      "threadRef": "H-cb-alerts"
+    },
+    {
+      "atMinute": -20160,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "fer@vendorpay.io", "displayName": "Fer Ruiz (VendorPay)" },
+      "text": "VendorPay MX — integration kickoff",
+      "meta": {
+        "startAtMinute": -20100,
+        "durationMin": 60,
+        "attendees": ["fer@vendorpay.io", "marian@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "location": "Meet"
+      }
+    },
+    {
+      "atMinute": -19000,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "Recordatorio: mañana no hay standup, feriado puente.",
+      "threadRef": "C-checkout-eng"
+    },
+    {
+      "atMinute": -17280,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "Subject: Presupuesto Q3 tooling de fraude\n\nBuenas noticias: the Q3 fraud tooling budget was approved — signed off by the director esta mañana. Podemos avanzar con la licencia del device-fingerprinting.",
+      "threadRef": "H-q3-budget"
+    },
+    {
+      "atMinute": -17200,
+      "source": "gmail",
+      "kind": "email",
+      "direction": "outbound",
+      "actor": { "email": "yo@maxolabs.io", "displayName": "Maxo" },
+      "text": "Subject: Re: Presupuesto Q3 tooling de fraude\n\nExcelente! Arranco el procurement con Rodrigo esta semana.",
+      "threadRef": "H-q3-budget"
+    },
+    {
+      "atMinute": -15840,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "R-77 desplegado con el cap nuevo — falsos positivos bajaron 60% en la primera semana 🎉",
+      "threadRef": "H-r77-tuning"
+    },
+    {
+      "atMinute": -14400,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "te guardé un alfajor de la merienda del equipo 🍪"
+    },
+    {
+      "atMinute": -12960,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "newsletter@acme.example", "displayName": "Acme Engineering Weekly" },
+      "text": "Subject: Acme Engineering Weekly #199\n\nEsta semana: postmortem del incidente de pagos, nueva política de on-call, y fotos del offsite."
+    },
+    {
+      "atMinute": -11520,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Kickoff del proyecto device-fingerprinting: Sofi lidera la evaluación técnica, Maxo el vendor assessment. Primera demo en dos semanas.",
+      "threadRef": "H-fingerprint"
+    },
+    {
+      "atMinute": -11460,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "Dale! Ya tengo el ambiente de pruebas armado, arranco con los SDKs mañana.",
+      "threadRef": "H-fingerprint"
+    },
+    {
+      "atMinute": -10080,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "Fraude LATAM — monthly review con el director",
+      "meta": {
+        "startAtMinute": -10020,
+        "durationMin": 45,
+        "attendees": ["marian@acme.example", "yo@maxolabs.io"],
+        "location": "Sala Jacarandá"
+      }
+    },
+    {
+      "atMinute": -8640,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "fer@vendorpay.io", "displayName": "Fer Ruiz (VendorPay)" },
+      "text": "Subject: VendorPay MX — sandbox credentials\n\nHola! Van las credenciales del sandbox para la integración. El endpoint de pruebas es api.sandbox.vendorpay.example.",
+      "threadRef": "H-vendorpay-contract"
+    },
+    {
+      "atMinute": -7200,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@rodrigo", "displayName": "Rodrigo Farías" },
+      "text": "Procurement de device-fingerprinting avanzando — legal ya aprobó el DPA, approved sin cambios.",
+      "threadRef": "H-fingerprint"
+    },
+    {
+      "atMinute": -5760,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "Maxo te sumé al canal #fraud-mx para lo de VendorPay"
+    },
+    {
+      "atMinute": -4320,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "newsletter@acme.example", "displayName": "Acme Engineering Weekly" },
+      "text": "Subject: Acme Engineering Weekly #200\n\nEdición 200! Recap del año, los mejores postmortems, y el roadmap de plataforma."
+    },
+    {
+      "atMinute": -2880,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@sofi", "displayName": "Sofi Blanco" },
+      "text": "Demo de device-fingerprinting lista — going with the TrustSignal SDK para el piloto, el otro no soporta React Native.",
+      "threadRef": "H-fingerprint"
+    },
+    {
+      "atMinute": -2820,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Buenísimo. Piloto arranca la semana que viene en BR con 5% del tráfico.",
+      "threadRef": "H-fingerprint"
+    },
+    {
+      "atMinute": -1440,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "sofi@acme.example", "displayName": "Sofi Blanco" },
+      "text": "TrustSignal pilot — go/no-go",
+      "meta": {
+        "startAtMinute": -1380,
+        "durationMin": 30,
+        "attendees": ["sofi@acme.example", "marian@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "location": "Meet"
+      }
+    },
+    {
+      "atMinute": -720,
+      "source": "slack",
+      "kind": "dm",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "che, mañana llego tarde al standup — turno médico"
+    },
+    {
+      "atMinute": -180,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "rodrigo@acme.example", "displayName": "Rodrigo Farías" },
+      "text": "Subject: Chargebacks BR — semana tranquila\n\nCerramos la semana en 0.4%, bien abajo del umbral. El cap nuevo de R-77 viene funcionando.",
+      "threadRef": "H-cb-alerts"
+    },
+    {
+      "atMinute": -60,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@caro", "displayName": "Caro Méndez" },
+      "text": "Buen finde a todos! 👋",
+      "threadRef": "C-checkout-eng"
+    }
+  ]
+}

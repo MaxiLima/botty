@@ -29,8 +29,13 @@ interface SourceAdapter {
   readonly source: SourceId;
   /** Fetch events newer than `since` (ISO). Must be idempotent; dedup happens downstream. */
   fetch(since: string | null): Promise<SourceEvent[]>;
+  /** Backfill: page backwards through history, newest-first (specs/backfill.md). Optional. */
+  fetchHistory?(opts: { cursor: string | null; oldest: string; limit: number }): Promise<HistoryPage>;
 }
 ```
+
+`fetchHistory` serves the one-shot context-only backfill (`specs/backfill.md`) — it shares
+raw_log dedup with live polling but never touches the `since` cursor and never creates tasks.
 
 Two driver families per source, selected by `BOTTY_MODE`:
 - **sim** (v1 ships all five): thin HTTP clients against `@botty/sim` (see `specs/simulator.md`).

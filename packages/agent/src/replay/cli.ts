@@ -17,6 +17,7 @@ import { parseArgs } from 'node:util';
 import {
   BriefingOutputSchema,
   ClassifierOutputSchema,
+  DistillOutputSchema,
   ExtractorOutputSchema,
   JudgmentOutputSchema,
   ResolutionOutputSchema,
@@ -41,6 +42,7 @@ const SCHEMAS: Record<ReplayableKind, z.ZodType<unknown>> = {
   resolution: ResolutionOutputSchema,
   // Session-seal summaries share BriefingOutputSchema's { title, body } shape.
   seal: BriefingOutputSchema,
+  distill: DistillOutputSchema,
 };
 
 interface RowResult {
@@ -183,6 +185,10 @@ function summarize(kind: ReplayableKind, output: unknown): string {
       return String(o.title ?? '').slice(0, 48) || '(untitled)';
     case 'resolution':
       return `${o.resolved ? 'resolve' : 'keep'}(${o.confidence as number})`;
+    case 'distill': {
+      const n = (k: string) => ((o[k] as unknown[] | undefined) ?? []).length;
+      return `${n('decisions')} decisions · ${n('people')} notes`;
+    }
   }
 }
 

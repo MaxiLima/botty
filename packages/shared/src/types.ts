@@ -348,6 +348,25 @@ export const ExtractorOutputSchema = z.object({
 });
 export type ExtractorOutput = z.infer<typeof ExtractorOutputSchema>;
 
+export const DistillOutputSchema = z.object({
+  /** Decisions already made in the thread — never tasks or action items. */
+  decisions: z
+    .array(
+      z.object({
+        description: z.string(),
+        rationale: z.string().optional(),
+        /** ISO; absent ⇒ runner falls back to the newest thread event's occurredAt. */
+        decidedAt: z.string().optional(),
+      }),
+    )
+    .default([]),
+  /** Short durable facts about people (role, area, relationship) — ≤140 chars each. */
+  people: z
+    .array(z.object({ name: z.string(), note: z.string() }))
+    .default([]),
+});
+export type DistillOutput = z.infer<typeof DistillOutputSchema>;
+
 export const JudgmentOutputSchema = z.object({
   tickReasoning: z.string(),
   actions: z

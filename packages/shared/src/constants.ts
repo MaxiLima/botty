@@ -4,6 +4,14 @@ export const SIM_PORT = 4821;
 export const SOURCES = ['slack', 'gmail', 'gcal', 'jira', 'github'] as const;
 export type SourceId = (typeof SOURCES)[number];
 
+/**
+ * Sources eligible for backfill (context-only historical ingest). jira/github are
+ * excluded on purpose: their structured handler creates tasks, and backfill must
+ * never create tasks (see docs/specs/backfill.md).
+ */
+export const BACKFILL_SOURCES = ['slack', 'gmail', 'gcal'] as const;
+export type BackfillSourceId = (typeof BACKFILL_SOURCES)[number];
+
 export type LlmTask =
   | 'chat'
   | 'judgment'
@@ -11,7 +19,8 @@ export type LlmTask =
   | 'extraction'
   | 'briefing'
   | 'resolution'
-  | 'seal';
+  | 'seal'
+  | 'distill';
 
 export const DEFAULT_MODELS: Record<LlmTask, string> = {
   chat: 'claude-sonnet-5',
@@ -24,12 +33,14 @@ export const DEFAULT_MODELS: Record<LlmTask, string> = {
   // Session-seal summaries are housekeeping, not user-facing judgment — cheap-model routing
   // (2026-07-09 investigation "Cheap-model overrides for housekeeping").
   seal: 'claude-haiku-4-5',
+  // Backfill distillation is bulk housekeeping over historical threads — cheap tier.
+  distill: 'claude-haiku-4-5',
 };
 
 // ---------- costs ----------
 
 /** Activity buckets for the costs report, derived from ai_decisions.kind. */
-export const COST_CATEGORIES = ['chat', 'intake', 'proactive', 'resolution', 'briefing', 'other'] as const;
+export const COST_CATEGORIES = ['chat', 'intake', 'proactive', 'resolution', 'briefing', 'backfill', 'other'] as const;
 export type CostCategory = (typeof COST_CATEGORIES)[number];
 
 export const COST_CATEGORY_LABELS: Record<CostCategory, string> = {
@@ -38,6 +49,7 @@ export const COST_CATEGORY_LABELS: Record<CostCategory, string> = {
   proactive: 'Proactive loop',
   resolution: 'Resolution sweep',
   briefing: 'Briefings & summaries',
+  backfill: 'Backfill',
   other: 'Other',
 };
 
@@ -51,6 +63,7 @@ export const COST_CATEGORY_BY_KIND: Record<string, CostCategory> = {
   briefing: 'briefing',
   // Session-seal summaries are chat housekeeping, not a morning/evening briefing.
   seal: 'chat',
+  distill: 'backfill',
 };
 
 export interface ModelPricing {

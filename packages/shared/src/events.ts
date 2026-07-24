@@ -32,6 +32,15 @@ export const ScenarioEventSchema = z.object({
   meta: z.record(z.string(), z.unknown()).optional(),
 });
 
+/**
+ * Backfill history event: same shape as a timeline event but atMinute is negative
+ * (minutes BEFORE scenario start). Never clock-released — served only by the
+ * GET /:source/history endpoint for the agent's backfill run.
+ */
+export const HistoryEventSchema = ScenarioEventSchema.refine((e) => e.atMinute < 0, {
+  message: 'history events must have atMinute < 0 (minutes before scenario start)',
+});
+
 export const ScenarioSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -39,6 +48,7 @@ export const ScenarioSchema = z.object({
     .array(z.object({ name: z.string(), slackHandle: z.string().optional(), email: z.string().optional() }))
     .default([]),
   events: z.array(ScenarioEventSchema),
+  history: z.array(HistoryEventSchema).default([]),
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 export type ScenarioEvent = z.infer<typeof ScenarioEventSchema>;

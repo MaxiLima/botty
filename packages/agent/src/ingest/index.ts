@@ -23,8 +23,8 @@ export interface Ingest {
   checkNow(source: SourceId): Promise<string>;
 }
 
-/** Wire adapters (per BOTTY_MODE) + scheduler + funnel from the agent core. */
-export function createIngest(ctx: AgentContext): Ingest {
-  const adapters = createAdapters(ctx.env);
+/** Wire adapters (per BOTTY_MODE) + scheduler + funnel from the agent core.
+ * Pass `adapters` to share one AdapterMap with other consumers (backfill). */
+export function createIngest(ctx: AgentContext, adapters = createAdapters(ctx.env)): Ingest {
   return createScheduler({ db: ctx.db, llm: ctx.llm, bus: ctx.bus, config: ctx.config }, adapters);
 }

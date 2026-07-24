@@ -24,6 +24,18 @@ GET /github/events?since=     assigned PRs/issues (meta: {repo, number, state, u
 Only already-released events are returned (see scenario playback), each filtered on the
 wall-clock moment it was released — inject or clock crossing `atMinute` (`engine.ts eventsFor`).
 
+### History endpoint (backfill — specs/backfill.md)
+
+```
+GET /<source>/history?cursor=&oldest=&limit=   → { events, nextCursor }
+```
+
+Serves the scenario's `history` block (below), newest-first, paged (limit clamped 1..500,
+default 100). The cursor is engine-minted and opaque (`"<occurredAtIso>|<idx>"`); `oldest`
+(ISO) bounds the window. History events are materialized at scenario load with stable
+`<scenario>-hist-<idx>` ids and are **never** clock-released — they exist only for the agent's
+backfill run (`engine.ts historyFor`).
+
 ## Control API
 
 ```
@@ -60,6 +72,11 @@ GET  /control/templates              → canned inject templates (slack DM from 
 
 `atMinute` is relative to scenario start; the engine converts to absolute `occurredAt` when
 released. gcal `startAtMinute` likewise.
+
+An optional `history` array holds backfill events in the same shape but with **negative**
+`atMinute` (minutes before scenario start; schema-enforced) — e.g. `-43200` = 30 days back.
+They anchor to real timestamps in the past at load. See `scenarios/backfill.json` (a 30-day
+history-only scenario) and the small `history` block in `sandbox.json`.
 
 ## Seed scenario: `workweek.json`
 

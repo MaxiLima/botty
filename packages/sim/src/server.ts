@@ -45,6 +45,17 @@ export function createApp(engine: SimEngine): Express {
       const since = typeof req.query.since === 'string' ? req.query.since : null;
       res.json({ events: engine.eventsFor(source as SourceId, since) });
     });
+
+    // Backfill: page through the scenario's `history` block (docs/specs/backfill.md).
+    app.get(`/${source}/history`, (req: Request, res: Response) => {
+      handle(res, () => {
+        const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+        const oldest = typeof req.query.oldest === 'string' ? req.query.oldest : null;
+        const rawLimit = Number(req.query.limit);
+        const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.trunc(rawLimit), 1), 500) : 100;
+        return engine.historyFor(source as SourceId, { cursor, oldest, limit });
+      });
+    });
   }
 
   // ── Control API ──────────────────────────────────────────────────────────

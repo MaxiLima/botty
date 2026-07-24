@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SOURCES, type SourceEvent, type SourceId } from '@botty/shared';
 import { parseHeartbeat } from '../../src/config/parse.js';
 import { createSimAdapter } from '../../src/ingest/adapters/sim.js';
-import type { AdapterMap, SourceAdapter } from '../../src/ingest/adapters/index.js';
+import { createAdapters, type AdapterMap, type SourceAdapter } from '../../src/ingest/adapters/index.js';
 import { createScheduler, sinceKey } from '../../src/ingest/scheduler.js';
 import { makeEvent, makeHarness, type Harness } from './helpers.js';
 
@@ -204,5 +204,44 @@ describe('sim adapter', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe('sim adapter fetchHistory (backfill)', () => {
+  it('GETs /<source>/history with cursor/oldest/limit, validates events, passes nextCursor', async () => {
+    const requests: string[] = [];
+    const good = makeEvent({ externalId: 'hist-good', text: 'old thread message' });
+    const server = http.createServer((req, res) => {
+      requests.push(req.url!);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ events: [good, { nonsense: true }], nextCursor: 'c2' }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const adapter = createSimAdapter('slack', `http://127.0.0.1:${port}`);
+      const page = await adapter.fetchHistory!({
+        cursor: null,
+        oldest: '2026-06-24T00:00:00.000Z',
+        limit: 100,
+      });
+      expect(requests[0]).toBe('/slack/history?oldest=2026-06-24T00%3A00%3A00.000Z&limit=100');
+      expect(page.events).toHaveLength(1);
+      expect(page.events[0]!.externalId).toBe('hist-good');
+      expect(page.nextCursor).toBe('c2');
+
+      await adapter.fetchHistory!({ cursor: 'c2', oldest: '2026-06-24T00:00:00.000Z', limit: 100 });
+      expect(requests[1]).toContain('cursor=c2');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('real adapter stub throws the M4 history error', async () => {
+    const adapters = createAdapters({ mode: 'real', simUrl: 'http://localhost:0' });
+    await expect(
+      adapters.slack.fetchHistory!({ cursor: null, oldest: '2026-01-01T00:00:00.000Z', limit: 10 }),
+    ).rejects.toThrow(/real slack history driver not implemented yet \(M4\)/);
   });
 });

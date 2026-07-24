@@ -13,6 +13,7 @@ const CATEGORY_COLOR: Record<CostCategory, string> = {
   proactive: '#c98500',
   resolution: '#3987e5',
   briefing: '#d55181',
+  backfill: '#64748b',
   other: '#d95926',
 };
 

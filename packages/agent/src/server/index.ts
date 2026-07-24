@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ZodError } from 'zod';
 import type { AgentContext } from '../context.js';
+import type { Backfill } from '../backfill/index.js';
 import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { HttpError, zodDetail } from './errors.js';
@@ -24,6 +25,8 @@ export interface AgentServer {
 export interface ServerDeps {
   ingest: Ingest;
   loop: Loop;
+  /** Optional so lightweight test servers can omit it; main.ts always wires it. */
+  backfill?: Backfill;
 }
 
 /** packages/web/dist resolved relative to this module (→ repo root/packages/web/dist). */

@@ -195,6 +195,7 @@ const COST_CATEGORY_INK: Record<CostCategory, string | undefined> = {
   proactive: 'yellow',
   resolution: 'blue',
   briefing: 'cyan',
+  backfill: 'gray',
   other: undefined,
 };
 

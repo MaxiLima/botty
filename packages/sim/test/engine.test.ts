@@ -171,3 +171,80 @@ describe('reset', () => {
     expect(st.clock.startedAt).toBeNull();
   });
 });
+
+describe('history (backfill)', () => {
+  function backfillEngine(): SimEngine {
+    const engine = new SimEngine({ now: () => T0 });
+    const { scenario, templates } = loadScenarioFile('backfill');
+    engine.loadScenario(scenario, templates);
+    return engine;
+  }
+
+  it('materializes history at load without releasing it to pollers', () => {
+    const engine = backfillEngine();
+    const st = engine.state();
+    expect(st.scenario?.historyCount).toBeGreaterThan(30);
+    expect(st.released).toHaveLength(0);
+    expect(st.pending).toHaveLength(0);
+    expect(engine.eventsFor('slack')).toHaveLength(0);
+  });
+
+  it('serves newest-first pages with stable hist- ids and valid events', () => {
+    const engine = backfillEngine();
+    const page = engine.historyFor('slack', { limit: 5 });
+    expect(page.events).toHaveLength(5);
+    expect(page.nextCursor).not.toBeNull();
+    for (const e of page.events) {
+      expect(() => SourceEventSchema.parse(e)).not.toThrow();
+      expect(e.source).toBe('slack');
+      expect(e.externalId).toMatch(/^backfill-hist-\d+$/);
+    }
+    const times = page.events.map((e) => Date.parse(e.occurredAt));
+    expect([...times].sort((a, b) => b - a)).toEqual(times);
+    // occurredAt anchored before scenario start
+    for (const t of times) expect(t).toBeLessThan(T0);
+  });
+
+  it('pages through without dropping or repeating events', () => {
+    const engine = backfillEngine();
+    const all = engine.historyFor('slack', { limit: 500 }).events;
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      const page = engine.historyFor('slack', { cursor, limit: 3 });
+      seen.push(...page.events.map((e) => e.externalId));
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    expect(seen).toEqual(all.map((e) => e.externalId));
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('bounds the window with oldest', () => {
+    const engine = backfillEngine();
+    const oldest = new Date(T0 - 7 * 24 * 60 * 60_000).toISOString(); // 7 days back
+    const page = engine.historyFor('slack', { oldest, limit: 500 });
+    expect(page.nextCursor).toBeNull();
+    expect(page.events.length).toBeGreaterThan(0);
+    for (const e of page.events) {
+      expect(Date.parse(e.occurredAt)).toBeGreaterThanOrEqual(Date.parse(oldest));
+    }
+  });
+
+  it('absolutizes gcal history meta to past startAt/endAt', () => {
+    const engine = backfillEngine();
+    const page = engine.historyFor('gcal', { limit: 500 });
+    expect(page.events.length).toBeGreaterThan(1);
+    for (const e of page.events) {
+      expect(Date.parse(e.meta.startAt as string)).toBeLessThan(T0);
+      expect(e.meta).not.toHaveProperty('startAtMinute');
+    }
+  });
+
+  it('throws on a malformed cursor and clears history on reset', () => {
+    const engine = backfillEngine();
+    expect(() => engine.historyFor('slack', { cursor: 'garbage', limit: 5 })).toThrow(/bad cursor/);
+    engine.reset();
+    expect(engine.historyFor('slack', { limit: 5 }).events).toHaveLength(0);
+  });
+});

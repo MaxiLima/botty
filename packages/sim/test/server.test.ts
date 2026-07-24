@@ -117,3 +117,31 @@ describe('control API + source endpoints', () => {
     expect((await get('/slack/events')).events).toHaveLength(0);
   });
 });
+
+describe('history endpoint (backfill)', () => {
+  it('serves paged history with limit clamping and cursor continuation', async () => {
+    await post('/control/scenario/load', { name: 'backfill' });
+
+    const first = await get('/slack/history?limit=4');
+    expect(first.events).toHaveLength(4);
+    expect(first.nextCursor).toBeTruthy();
+    for (const e of first.events) expect(() => SourceEventSchema.parse(e)).not.toThrow();
+
+    const second = await get(`/slack/history?limit=4&cursor=${encodeURIComponent(first.nextCursor)}`);
+    const firstIds = new Set(first.events.map((e: any) => e.externalId));
+    for (const e of second.events) expect(firstIds.has(e.externalId)).toBe(false);
+
+    // bad limit falls back to default; huge limit is clamped, not an error
+    const dflt = await get('/slack/history?limit=zzz');
+    expect(dflt.events.length).toBeGreaterThan(0);
+    const clamped = await fetch(base + '/slack/history?limit=99999');
+    expect(clamped.status).toBe(200);
+
+    // bad cursor is a 400, not a crash
+    const bad = await fetch(base + '/slack/history?cursor=garbage');
+    expect(bad.status).toBe(400);
+
+    await post('/control/reset', {});
+    expect((await get('/slack/history?limit=5')).events).toHaveLength(0);
+  });
+});

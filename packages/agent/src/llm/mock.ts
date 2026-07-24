@@ -38,6 +38,9 @@ export const MOCK_SIGNAL_REGEXES: RegExp[] = [
   /\bi own\b/i,
 ];
 
+/** Decision subset of MOCK_SIGNAL_REGEXES — the mock distiller emits one decision per matching EVENT: line. */
+export const MOCK_DECISION_RE = /we decided|going with|agreed to|\bapproved\b|signed off/i;
+
 /** Mirrors the response tracker's completion vocabulary (loop/response-tracker.ts). */
 export const MOCK_COMPLETION_RE =
   /\b(done|finished|completed|shipped|resolved|closed|merged|sent|deployed|hecho|hecha|listo|lista|terminado|terminada)\b|ya\s+est[aá]/i;
@@ -206,6 +209,18 @@ export class MockLlmClient implements LlmClient {
       case 'seal':
         candidate = { title: '[mock] Session summary', body: '[mock] Nothing to report.' };
         break;
+      case 'distill': {
+        // Deterministic backfill distillation: one decision per thread EVENT: line
+        // (buildDistillPrompt convention) carrying decision phrasing; no people notes.
+        const events = req.prompt.match(/^EVENT:.*$/gm) ?? [];
+        candidate = {
+          decisions: events
+            .filter((line) => MOCK_DECISION_RE.test(line))
+            .map((line) => ({ description: `[mock] ${line.replace(/^EVENT:\s*/, '').slice(0, 120)}` })),
+          people: [],
+        };
+        break;
+      }
     }
 
     const value = req.schema.parse(candidate);

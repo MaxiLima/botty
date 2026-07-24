@@ -63,6 +63,12 @@ describe('buildCostsReport', () => {
     expect(report.windows.last7d.byModel[0]!.calls).toBe(2);
   });
 
+  it('buckets distill calls under the backfill category', () => {
+    const report = buildCostsReport([row({ kind: 'distill', model: 'claude-haiku-4-5' })], PRICING, NOW);
+    expect(report.windows.allTime.byCategory.backfill!.costUsd).toBeCloseTo(6);
+    expect(report.windows.allTime.byCategory.other!.costUsd).toBe(0);
+  });
+
   it('counts unknown models as unpriced ($0) and unknown kinds as other', () => {
     const report = buildCostsReport(
       [row({ kind: 'mystery', model: 'some-future-model', calls: 3 })],

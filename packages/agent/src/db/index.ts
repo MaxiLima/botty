@@ -313,6 +313,26 @@ export class Db {
     return this.getPerson(id);
   }
 
+  /**
+   * Append a short distilled fact to a DISCOVERED person's notes (backfill
+   * distillation). team_md people are refused: their notes are owned by TEAM.md
+   * and clobbered on every materializePeople() run. Dedups on substring; the
+   * merged field is clipped to 300 chars. Returns true when a note was written.
+   */
+  appendPersonNote(id: string, note: string): boolean {
+    const person = this.getPerson(id);
+    if (!person || person.source !== 'discovered') return false;
+    const trimmed = note.trim();
+    if (!trimmed || person.notes?.includes(trimmed)) return false;
+    let merged = person.notes ? `${person.notes} · ${trimmed}` : trimmed;
+    if (merged.length > 300) {
+      if (!person.notes) merged = `${trimmed.slice(0, 299)}…`;
+      else return false; // notes full — keep the older facts
+    }
+    this.raw.prepare('UPDATE people SET notes=?, updated_at=? WHERE id=?').run(merged, nowIso(), id);
+    return true;
+  }
+
   touchPersonInteraction(id: string, at: string): void {
     this.raw
       .prepare(
@@ -628,6 +648,35 @@ export class Db {
       : this.raw.prepare(`SELECT ${cols} FROM raw_log ORDER BY captured_at DESC LIMIT ?`).all(limit);
     // SQL yields null for unstamped rows; the schema models absence as optional.
     return mapRows<RawLogRow>(rows).map((r) => ({ ...r, outcome: r.outcome ?? undefined }));
+  }
+
+  /**
+   * Backfill-marked raw_log threads for one source, newest-first (backfill
+   * distillation — docs/specs/backfill.md). Rows are grouped by
+   * `body.threadRef ?? external_id`; `distilled` is true when the group's newest
+   * row carries `meta.distilledAt` (stamped after a successful distill call, so
+   * re-runs and resumes skip the thread).
+   */
+  backfilledThreads(source: string): { ref: string; newestRowId: string; distilled: boolean }[] {
+    const rows = this.raw
+      .prepare(
+        `SELECT id,
+                COALESCE(json_extract(body, '$.threadRef'), external_id) AS ref,
+                occurred_at AS occurredAt,
+                json_extract(body, '$.meta.distilledAt') AS distilledAt
+         FROM raw_log
+         WHERE source=? AND json_valid(body) AND json_extract(body, '$.meta.backfill') = 1
+         ORDER BY occurred_at DESC, captured_at DESC`,
+      )
+      .all(source) as { id: string; ref: string; occurredAt: string; distilledAt: string | null }[];
+    const threads = new Map<string, { ref: string; newestRowId: string; distilled: boolean }>();
+    for (const row of rows) {
+      // rows arrive newest-first, so the first row seen per ref is the newest
+      if (!threads.has(row.ref)) {
+        threads.set(row.ref, { ref: row.ref, newestRowId: row.id, distilled: row.distilledAt !== null });
+      }
+    }
+    return [...threads.values()];
   }
 
   /**

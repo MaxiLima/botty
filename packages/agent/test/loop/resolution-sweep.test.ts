@@ -274,3 +274,54 @@ describe('runResolutionSweep', () => {
     expect(h.db.getTask(taskId)!.status).toBe('done');
   });
 });
+
+describe('backfill evidence guard', () => {
+  it('backfilled thread history with completion phrases never auto-closes and burns no LLM budget', async () => {
+    const h = makeHarness();
+    const taskId = await seedTask(h);
+
+    // A later backfill run inserts OLD rows into the live task's thread — one of
+    // them carries a completion phrase the mock resolution model would act on.
+    const { processHistoricalEvent } = await import('../../src/backfill/process.js');
+    processHistoricalEvent(
+      h.ctx,
+      makeEvent({
+        externalId: 'bf-old-done',
+        threadRef: 'T-PR',
+        direction: 'outbound',
+        actor: { displayName: 'me' },
+        text: 'done — shipped the old version months ago',
+        occurredAt: T1,
+      }),
+    );
+
+    const spy = spyLlm(h.llm);
+    const result = await runResolutionSweep(
+      { ...sweepDeps(h), llm: spy.llm },
+      { state: createSweepState(), trigger: 'sweep-now' },
+    );
+
+    // guard: the backfilled row is not evidence — no LLM call, task stays open
+    expect(spy.calls).toHaveLength(0);
+    expect(result.checked).toBe(0);
+    expect(result.skipped).toEqual([{ taskId, reason: 'no_evidence' }]);
+    expect(h.db.getTask(taskId)!.status).toBe('open');
+  });
+
+  it('live replies still resolve normally alongside backfilled rows', async () => {
+    const h = makeHarness();
+    const taskId = await seedTask(h);
+    const { processHistoricalEvent } = await import('../../src/backfill/process.js');
+    processHistoricalEvent(
+      h.ctx,
+      makeEvent({ externalId: 'bf-noise', threadRef: 'T-PR', text: 'old chatter', occurredAt: T1 }),
+    );
+    await processEvent(h.ctx, myReply('review done ✅', 'T-PR', T2));
+
+    const result = await runResolutionSweep(sweepDeps(h), {
+      state: createSweepState(),
+      trigger: 'sweep-now',
+    });
+    expect(result.closed.map((c) => c.taskId)).toEqual([taskId]);
+  });
+});

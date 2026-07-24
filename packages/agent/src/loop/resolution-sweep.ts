@@ -108,19 +108,23 @@ interface EvidenceEvent {
   direction: string;
   actor: string | null;
   text: string;
+  /** Row ingested by backfill (raw_log body.meta.backfill) — never evidence. */
+  backfill: boolean;
 }
 
 function parseEvent(row: RawLogRow): EvidenceEvent {
   let direction = 'inbound';
   let text = row.body;
+  let backfill = false;
   try {
-    const body = JSON.parse(row.body) as { direction?: unknown; text?: unknown };
+    const body = JSON.parse(row.body) as { direction?: unknown; text?: unknown; meta?: Record<string, unknown> };
     if (body.direction === 'outbound') direction = 'outbound';
     if (typeof body.text === 'string') text = body.text;
+    backfill = body.meta?.backfill === true;
   } catch {
     // raw body isn't JSON — treat it as the text
   }
-  return { occurredAt: row.occurredAt, direction, actor: row.actor, text };
+  return { occurredAt: row.occurredAt, direction, actor: row.actor, text, backfill };
 }
 
 /**
@@ -134,7 +138,14 @@ export function gatherEvidence(
   if (!task.sourceRef) return { origin: null, evidence: [] };
   const rows = db.threadEvents(task.source, baseThreadRef(task.sourceRef));
   if (rows.length === 0) return { origin: null, evidence: [] };
-  const events = rows.map(parseEvent);
+  // Backfilled history is filtered out BEFORE origin matching: a later backfill
+  // can insert old rows into a live task's thread, and via the originIdx=0
+  // fallback they would read as "evidence after the ask" — old completion
+  // phrases would wrongly auto-close live tasks and burn the per-sweep LLM
+  // budget through the watermark. Safe because backfill never creates tasks:
+  // every sweepable task's origin is a live row (docs/specs/backfill.md).
+  const events = rows.map(parseEvent).filter((e) => !e.backfill);
+  if (events.length === 0) return { origin: null, evidence: [] };
   let originIdx = task.rawText ? events.findIndex((e) => e.text === task.rawText) : 0;
   if (originIdx === -1) originIdx = 0;
   return { origin: events[originIdx] ?? null, evidence: events.slice(originIdx + 1) };

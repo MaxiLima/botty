@@ -5,7 +5,8 @@ import { createConfig } from './config/index.js';
 import { createLlm } from './llm/index.js';
 import { createMemory } from './memory/index.js';
 import { createChat } from './chat/index.js';
-import { createIngest } from './ingest/index.js';
+import { createBackfill } from './backfill/index.js';
+import { createAdapters, createIngest } from './ingest/index.js';
 import { createLoop } from './loop/index.js';
 import { createServer } from './server/index.js';
 import { createMcpConnections } from './mcp/connections.js';
@@ -41,10 +42,12 @@ async function main(): Promise<void> {
 
   const ctx: AgentContext = { env, db, bus, config, llm, memory, chat, mcpConnections, pendingActions };
 
-  // 9-11. ingest → loop → server
-  const ingest = createIngest(ctx);
+  // 9-11. ingest → loop → server (backfill shares the ingest AdapterMap)
+  const adapters = createAdapters(env);
+  const ingest = createIngest(ctx, adapters);
+  const backfill = createBackfill({ db, llm, bus, config }, adapters);
   const loop = createLoop(ctx);
-  const server = createServer(ctx, { ingest, loop });
+  const server = createServer(ctx, { ingest, loop, backfill });
 
   await server.start();
   ingest.start();

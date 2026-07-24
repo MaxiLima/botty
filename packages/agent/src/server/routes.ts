@@ -19,6 +19,8 @@ import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { nowIso, type Db } from '../db/index.js';
 import { badRequest, conflict, notFound, param, parseBody, queryInt, queryStr, wrap } from './errors.js';
+import type { Backfill } from '../backfill/index.js';
+import { registerBackfillRoutes } from './backfill.js';
 import { ONBOARDING_COMPLETED_KEY, registerOnboardingRoutes } from './onboarding.js';
 import { buildCostsReport, pricingWithOverrides } from './costs.js';
 import { nanoid } from 'nanoid';
@@ -74,7 +76,7 @@ function openTaskCountsBy(db: Db, column: 'requested_by' | 'project_id'): Map<st
 
 // ---------- router ----------
 
-export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: Loop }): Router {
+export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: Loop; backfill?: Backfill }): Router {
   const { db, bus, config, chat, env, pendingActions } = ctx;
   const router = Router();
 
@@ -520,6 +522,10 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
   // ----- onboarding wizard (docs/specs/onboarding.md) -----
 
   registerOnboardingRoutes(router, ctx);
+
+  // ----- backfill (docs/specs/backfill.md) -----
+
+  if (deps.backfill) registerBackfillRoutes(router, deps.backfill);
 
   // Unknown /api routes → JSON 404 (never the SPA fallback).
   router.use((req, res) => {

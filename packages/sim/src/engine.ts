@@ -40,8 +40,15 @@ export interface InjectInput {
   meta?: Record<string, unknown>;
 }
 
+/** One page of historical events for the agent's backfill (newest-first). */
+export interface HistoryPage {
+  events: SourceEvent[];
+  /** Opaque continuation cursor; null when the page exhausted the history. */
+  nextCursor: string | null;
+}
+
 export interface EngineState {
-  scenario: { name: string; description?: string; eventCount: number } | null;
+  scenario: { name: string; description?: string; eventCount: number; historyCount: number } | null;
   clock: {
     minutes: number;
     playing: boolean;
@@ -78,6 +85,12 @@ export class SimEngine {
   private timer: ReturnType<typeof setInterval> | null = null;
   private pending: PendingEvent[] = [];
   private released: ReleasedEvent[] = [];
+  /**
+   * Backfill history (scenario `history` block, atMinute < 0), materialized at
+   * load and served only by historyFor() — never clock-released to pollers.
+   * Kept newest-first with the original index as tie-break so cursors are stable.
+   */
+  private history: Array<{ idx: number; event: SourceEvent }> = [];
   private readonly now: () => number;
 
   constructor(opts: { now?: () => number } = {}) {
@@ -92,6 +105,12 @@ export class SimEngine {
     this.pending = scenario.events
       .map((event, idx) => ({ idx, event }))
       .sort((a, b) => a.event.atMinute - b.event.atMinute || a.idx - b.idx);
+    this.history = scenario.history
+      .map((event, idx) => ({ idx, event: this.toSourceEvent(event, idx, 'hist') }))
+      .sort(
+        (a, b) =>
+          Date.parse(b.event.occurredAt) - Date.parse(a.event.occurredAt) || b.idx - a.idx,
+      );
     this.releaseDue();
   }
 
@@ -104,6 +123,7 @@ export class SimEngine {
     this.speed = 60;
     this.pending = [];
     this.released = [];
+    this.history = [];
   }
 
   play(speed?: number): void {
@@ -175,6 +195,40 @@ export class SimEngine {
       .map((r) => r.event);
   }
 
+  /**
+   * Page backwards through the scenario's history block, newest first. The
+   * cursor is engine-minted ("<occurredAtIso>|<idx>") and opaque to callers;
+   * `oldest` (ISO) bounds the window. Never touches released/pending events.
+   */
+  historyFor(
+    source: SourceId,
+    opts: { cursor?: string | null; oldest?: string | null; limit: number },
+  ): HistoryPage {
+    const oldestMs = opts.oldest ? Date.parse(opts.oldest) : Number.NaN;
+    let rows = this.history.filter((h) => {
+      if (h.event.source !== source) return false;
+      if (!Number.isNaN(oldestMs)) return Date.parse(h.event.occurredAt) >= oldestMs;
+      return true;
+    });
+    if (opts.cursor) {
+      const [cIso, cIdxRaw] = opts.cursor.split('|');
+      const cMs = Date.parse(cIso ?? '');
+      const cIdx = Number(cIdxRaw);
+      if (Number.isNaN(cMs) || !Number.isFinite(cIdx)) throw new Error(`bad cursor: ${opts.cursor}`);
+      // Strictly after the cursor entry in (occurredAt desc, idx desc) order.
+      rows = rows.filter((h) => {
+        const ms = Date.parse(h.event.occurredAt);
+        return ms < cMs || (ms === cMs && h.idx < cIdx);
+      });
+    }
+    const page = rows.slice(0, opts.limit);
+    const last = page[page.length - 1];
+    return {
+      events: page.map((h) => h.event),
+      nextCursor: rows.length > page.length && last ? `${last.event.occurredAt}|${last.idx}` : null,
+    };
+  }
+
   templates(): InjectTemplate[] {
     return this.scenarioTemplates;
   }
@@ -186,6 +240,7 @@ export class SimEngine {
             name: this.scenario.name,
             description: this.scenario.description,
             eventCount: this.scenario.events.length,
+            historyCount: this.history.length,
           }
         : null,
       clock: {
@@ -224,12 +279,12 @@ export class SimEngine {
     if (releasedAny) this.sortReleased();
   }
 
-  private toSourceEvent(ev: ScenarioEvent, idx: number): SourceEvent {
+  private toSourceEvent(ev: ScenarioEvent, idx: number, idKind: 'evt' | 'hist' = 'evt'): SourceEvent {
     const startedAtMs = this.startedAtMs!;
     const meta: Record<string, unknown> = { ...(ev.meta ?? {}) };
     // Scenario authors can pin externalId in meta (e.g. to script a DUPLICATE delivery).
     const externalId =
-      typeof meta.externalId === 'string' ? meta.externalId : `${this.scenario!.name}-evt-${idx}`;
+      typeof meta.externalId === 'string' ? meta.externalId : `${this.scenario!.name}-${idKind}-${idx}`;
     delete meta.externalId;
     if (ev.source === 'gcal' && typeof meta.startAtMinute === 'number') {
       this.absolutizeGcalMeta(meta, startedAtMs);

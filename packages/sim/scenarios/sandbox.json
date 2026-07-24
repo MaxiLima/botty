@@ -10,6 +10,45 @@
     { "name": "Fer", "slackHandle": "@fer", "email": "fer@vendorpay.io" }
   ],
   "events": [],
+  "history": [
+    {
+      "atMinute": -10080,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@marian", "displayName": "Marian Gutiérrez" },
+      "text": "Cerramos la discusión del rate limit: we decided to go with the sliding-window counter, Diego owns the rollout.",
+      "threadRef": "H-ratelimit"
+    },
+    {
+      "atMinute": -10020,
+      "source": "slack",
+      "kind": "channel",
+      "actor": { "handle": "@diego", "displayName": "Diego Paz" },
+      "text": "Dale, lo despliego el jueves con feature flag.",
+      "threadRef": "H-ratelimit"
+    },
+    {
+      "atMinute": -7200,
+      "source": "gmail",
+      "kind": "email",
+      "actor": { "email": "caro@acme.example", "displayName": "Caro Méndez" },
+      "text": "Subject: Notas del QBR\n\nResumen del QBR: el equipo cierra el trimestre 12% arriba del objetivo de detección.",
+      "threadRef": "H-qbr"
+    },
+    {
+      "atMinute": -1440,
+      "source": "gcal",
+      "kind": "event",
+      "actor": { "email": "marian@acme.example", "displayName": "Marian Gutiérrez" },
+      "text": "Fraud squad — retro quincenal",
+      "meta": {
+        "startAtMinute": -1380,
+        "durationMin": 45,
+        "attendees": ["marian@acme.example", "sofi@acme.example", "yo@maxolabs.io"],
+        "location": "Meet"
+      }
+    }
+  ],
   "templates": [
     {
       "id": "gmail-meeting-notes",

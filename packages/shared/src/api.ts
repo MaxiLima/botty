@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BACKFILL_SOURCES } from './constants.js';
 import {
   AiDecisionSummarySchema,
   ChatTurnSchema,
@@ -233,6 +234,59 @@ export const McpProbeResponseSchema = z.object({
 });
 export type McpProbeResponse = z.infer<typeof McpProbeResponseSchema>;
 
+// ---------- Backfill (docs/specs/backfill.md) ----------
+// One-shot, manual, context-only historical ingest. The CLI drives these routes;
+// the full state blob is persisted under the agent-owned `backfill.state` settings
+// key (NOT in SETTABLE_SETTINGS_KEYS) and broadcast as `backfill.progress`.
+
+export const BackfillStartRequestSchema = z.object({
+  /** Default: all of BACKFILL_SOURCES. */
+  sources: z.array(z.enum(BACKFILL_SOURCES)).min(1).optional(),
+  days: z.number().int().min(1).max(365).default(30),
+  /** Distillation call cap for this run; 0 = deterministic layer only. */
+  maxLlmCalls: z.number().int().min(0).max(500).default(50),
+  /** Continue a prior non-done run: reuse its window and per-source cursors. */
+  resume: z.boolean().default(false),
+});
+export type BackfillStartRequest = z.infer<typeof BackfillStartRequestSchema>;
+
+export const BackfillSourceProgressSchema = z.object({
+  /** Adapter-opaque paging cursor; null before the first page and after the last. */
+  cursor: z.string().nullable(),
+  fetched: z.number(),
+  newEvents: z.number(),
+  duplicates: z.number(),
+  done: z.boolean(),
+  error: z.string().nullable(),
+});
+export type BackfillSourceProgress = z.infer<typeof BackfillSourceProgressSchema>;
+
+export const BackfillStateSchema = z.object({
+  status: z.enum(['idle', 'running', 'done', 'cancelled', 'error']),
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  window: z.object({ days: z.number(), oldest: z.string() }).nullable(),
+  sources: z.record(z.string(), BackfillSourceProgressSchema),
+  distill: z.object({
+    threadsSeen: z.number(),
+    threadsDistilled: z.number(),
+    callsUsed: z.number(),
+    callCap: z.number(),
+    decisionsCreated: z.number(),
+    notesAdded: z.number(),
+    errors: z.number(),
+    done: z.boolean(),
+  }),
+});
+export type BackfillState = z.infer<typeof BackfillStateSchema>;
+
+export const BackfillStartResponseSchema = z.object({
+  started: z.boolean(),
+  alreadyRunning: z.boolean().optional(),
+  state: BackfillStateSchema,
+});
+export type BackfillStartResponse = z.infer<typeof BackfillStartResponseSchema>;
+
 // ---------- WebSocket events (server -> client) ----------
 
 export const WsEventSchema = z.discriminatedUnion('type', [
@@ -269,6 +323,7 @@ export const WsEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('action.resolved'), payload: z.object({ action: PendingActionSchema }) }),
   z.object({ type: z.literal('tick.completed'), payload: z.object({ tick: TickLogSchema }) }),
   z.object({ type: z.literal('source.checked'), payload: z.object({ check: SourceCheckSchema }) }),
+  z.object({ type: z.literal('backfill.progress'), payload: z.object({ state: BackfillStateSchema }) }),
   z.object({ type: z.literal('decision.recorded'), payload: z.object({ decision: AiDecisionSummarySchema }) }),
   z.object({
     type: z.literal('config.changed'),
