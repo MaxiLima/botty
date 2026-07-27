@@ -7,8 +7,7 @@
   "engines": { "node": ">=22.12" },
   "overrides": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@hono/node-server": "1.19.14",
-    "postcss": "8.5.18"
+    "@hono/node-server": "1.19.14"
   },
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",

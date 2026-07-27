@@ -30,12 +30,16 @@ npm link -w @botty/cli
 botty start
 ```
 
-is a complete install. The lockfile deliberately pins a few transitive deps to
-versions old enough for mirror quarantine windows (`overrides` in the root
-`package.json`: `@modelcontextprotocol/sdk` 1.29.0, `@hono/node-server` 1.19.14 —
-re-accepting two Windows-only moderate advisories in code paths botty never
-executes; `postcss` 8.5.18). Revisit the pins once your mirror has synced newer
-versions. Dev work (tests, web rebuild) needs a full `npm install`.
+is a complete install. The lockfile is deliberately resolved with
+`npm install --before 2026-07-08` (plus `overrides` pinning
+`@modelcontextprotocol/sdk` 1.29.0 / `@hono/node-server` 1.19.14) so every
+version is weeks old — young versions are what quarantining mirrors 403.
+Accepted trade-off, revisit once the mirror catches up: two Windows-only
+moderate advisories in hono `serve-static` (a path botty never executes) and
+the `fast-uri` 3.1.3 high advisory (URI parsing inside the MCP SDK; inputs
+come only from MCP servers the user explicitly configured). To refresh later:
+drop the `overrides`, `npm audit fix`, re-run the tests. Dev work (tests, web
+rebuild) needs a full `npm install`.
 
 ## Quickstart (sim mode — no credentials needed)
 
