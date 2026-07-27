@@ -102,11 +102,15 @@ section below).
 
 ## P0 — becoming the daily driver
 
-1. **Real source drivers (M4).** Swap sim adapters for real ones behind the same
-   `SourceAdapter.fetch()` contract: claude.ai MCP connectors (Slack, Gmail, Google Calendar)
-   via the Agent SDK; Jira/GitHub via REST/CLI. **Start with a spike**: verify the Agent SDK can
-   reach claude.ai MCP connectors from a headless daemon session — this decides the design.
-   Everything downstream (raw log, dedup, funnel) is mode-agnostic and stays as is.
+1. **Real source drivers (M4).** ~~Spike~~ + ~~gmail/gcal~~ **shipped 2026-07-27**: the
+   2026-07-27 spike confirmed a headless Agent SDK session under the user's Claude
+   subscription login auto-loads claude.ai MCP connectors (deferred behind ToolSearch;
+   `settingSources: []` keeps plugins out; API-key auth must be stripped). Real gmail + gcal
+   drivers landed on that design (`packages/agent/src/ingest/adapters/real/`, new `fetch`
+   LlmTask, spec: `docs/specs/ingestion.md`). **Remaining**: slack (needs a user-supplied
+   Slack MCP server + bot token — no claude.ai connector exists), jira/github (REST/CLI with
+   user tokens), and `fetchHistory` for real gmail/gcal so backfill works in real mode.
+   Everything downstream (raw log, dedup, funnel) was mode-agnostic and unchanged.
 2. **Run as a service.** launchd agents for botty (and optionally the sim in dev): start at
    login, restart on crash, logs to `~/.botty/logs/`. Today it's two hand-started processes
    (or `botty start` — the 2026-07-18 CLI, `docs/specs/cli.md`; `botty serve` is the

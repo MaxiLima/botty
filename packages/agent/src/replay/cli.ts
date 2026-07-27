@@ -32,7 +32,9 @@ import { MockLlmClient } from '../llm/mock.js';
 import { SdkLlmClient, loadSdkQueryFn } from '../llm/sdk.js';
 import type { DecisionRecorder, LlmClient } from '../llm/types.js';
 
-type ReplayableKind = Exclude<LlmTask, 'chat'>;
+// 'fetch' (real-mode connector polls) is tool-driven, not a pure structured
+// call — it can't be replayed offline against a prompt, so it's excluded too.
+type ReplayableKind = Exclude<LlmTask, 'chat' | 'fetch'>;
 
 const SCHEMAS: Record<ReplayableKind, z.ZodType<unknown>> = {
   judgment: JudgmentOutputSchema,

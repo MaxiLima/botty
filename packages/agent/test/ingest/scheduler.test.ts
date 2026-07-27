@@ -238,10 +238,10 @@ describe('sim adapter fetchHistory (backfill)', () => {
     }
   });
 
-  it('real adapter stub throws the M4 history error', async () => {
-    const adapters = createAdapters({ mode: 'real', simUrl: 'http://localhost:0' });
+  it('credential-gated real adapter throws a helpful history error', async () => {
+    const adapters = createAdapters({ mode: 'real', simUrl: 'http://localhost:0', mockLlm: false });
     await expect(
       adapters.slack.fetchHistory!({ cursor: null, oldest: '2026-01-01T00:00:00.000Z', limit: 10 }),
-    ).rejects.toThrow(/real slack history driver not implemented yet \(M4\)/);
+    ).rejects.toThrow(/real slack history driver needs a Slack MCP server/);
   });
 });

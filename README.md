@@ -5,9 +5,11 @@ turns the ones that matter into tracked tasks, remembers people/projects/decisio
 the right thing at the right moment — without nagging. Local-first, single user, LLM via your
 Claude subscription (Claude Agent SDK). Spec: `docs/SPEC.md`.
 
-**Reality check**: v1 runs end-to-end against the built-in **simulator** (fake Slack/Gmail/GCal/
-Jira/GitHub). `BOTTY_MODE=real` is not implemented yet — `createRealAdapterStub` throws on every
-fetch (see `BACKLOG.md` P0 #1). Everything below is written for sim mode.
+**Reality check**: `BOTTY_MODE=real` polls **Gmail and Google Calendar for real** through your
+claude.ai MCP connectors (zero extra credentials — see "Real mode" below). Slack/Jira/GitHub
+real drivers still need user-supplied credentials and throw until configured (`BACKLOG.md`
+P0 #1). The built-in **simulator** (fake Slack/Gmail/GCal/Jira/GitHub) remains the default
+mode and the way to try everything without touching real data.
 
 ## Prerequisites
 
@@ -67,6 +69,24 @@ resolution Claude Code itself uses: an `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN
 otherwise your logged-in Claude Code / `ant auth login` session). In practice: if `claude` (Claude
 Code) already works on this machine, botty's real-LLM calls will too — no separate setup, no
 per-token API bill. Set `BOTTY_MOCK_LLM=1` to skip the SDK entirely (see the env var table below).
+
+## Real mode (Gmail + Google Calendar via claude.ai connectors)
+
+```sh
+BOTTY_MODE=real botty start        # or npm run dev:agent with BOTTY_MODE=real
+```
+
+Real-mode gmail/gcal polls run one fetch-only Agent SDK call each, using the **claude.ai
+connectors** already linked to your account (claude.ai → Settings → Connectors). Requirements:
+
+- You're logged into Claude Code with your claude.ai account on this machine (connectors do
+  **not** load under `ANTHROPIC_API_KEY` auth — botty strips it for fetch runs on purpose).
+- The Gmail / Google Calendar connectors are connected on claude.ai.
+
+Disable sources you don't want polled (slack/jira/github throw until their drivers get
+credentials) in `~/.botty/config/heartbeat.md` under `sources`. Each poll is a real LLM call
+billed to your subscription — intervals live in the same file (defaults: gmail 30m, gcal 60m).
+Every fetch is recorded in the Inspector (`ai_decisions` kind `fetch`).
 
 ## Environment variables
 

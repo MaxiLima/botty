@@ -39,10 +39,31 @@ raw_log dedup with live polling but never touches the `since` cursor and never c
 
 Two driver families per source, selected by `BOTTY_MODE`:
 - **sim** (v1 ships all five): thin HTTP clients against `@botty/sim` (see `specs/simulator.md`).
-- **real** (M4): claude.ai MCP connectors (Slack/Gmail/GCal) read through the Agent SDK — a
-  fetch-only, structured-output SDK call per poll that returns normalized `SourceEvent`s;
-  Jira/GitHub via REST/CLI. Same contract, drop-in. Unlike botito, the MCP read is confined to
-  `fetch()` — dedup/funnel/extraction stay deterministic and raw-logged.
+- **real** — shipped 2026-07-27 for **gmail + gcal** (`adapters/real/`): each poll is one
+  fetch-only Agent SDK run through the user's **claude.ai MCP connectors** — the model
+  searches with the connector's read tools and returns normalized `SourceEvent`s as JSON
+  (`WireBatchSchema`, one retry, recorded in `ai_decisions` as kind `fetch`, cost category
+  `intake`, model task `fetch` → sonnet by default). The MCP read is confined to `fetch()` —
+  dedup/funnel/extraction stay deterministic and raw-logged. **slack/jira/github** remain
+  credential-gated stubs (no claude.ai connector exists for them; they need a user-supplied
+  MCP server / API token).
+
+  The real family's SDK run is deliberately isolated (`adapters/real/connector.ts`):
+  - **auth**: env passed to the SDK strips `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` — the
+    claude.ai connectors only load under the user's Claude subscription login, never under
+    API-key auth. First-run failures get a "log in with `claude`" hint.
+  - **no settings/plugins**: `settingSources: []`. A Claude Code plugin MCP server spawned
+    here would be a second instance of it and can steal a single-consumer slot (e.g. a
+    Telegram bot's one `getUpdates`) from the user's live session.
+  - **read-only allowlist**: `allowedTools` = ToolSearch + the source's connector read tools
+    (connector tools are deferred behind tool search — do NOT pass a `tools` override, it
+    suppresses that machinery); every built-in that can touch the machine or network is in
+    `disallowedTools`. Connector results are untrusted content — a prompt injection inside an
+    email finds no tool that can act.
+  - **gcal ignores `since`**: each poll re-lists the next 7 days so event edits refresh
+    `calendar_events` (raw_log dedups the repeats; `handleGcal` upserts unconditionally).
+  - **backfill**: real gmail/gcal don't implement `fetchHistory` yet — a real-mode backfill
+    fails at runtime with a clear "does not support backfill yet" error.
 
 ## Scheduler
 

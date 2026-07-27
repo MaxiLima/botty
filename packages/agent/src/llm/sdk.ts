@@ -141,8 +141,9 @@ export class StreamTimeoutError extends Error {
   }
 }
 
-/** Iterate an SDK stream, failing if it goes silent (hung subprocess, dead resume id). */
-async function* withInactivityTimeout(
+/** Iterate an SDK stream, failing if it goes silent (hung subprocess, dead resume id).
+ * Exported for the real-mode connector fetch (ingest/adapters/real). */
+export async function* withInactivityTimeout(
   handle: SdkQueryHandle,
   ms: number,
 ): AsyncGenerator<SdkMessageLike> {

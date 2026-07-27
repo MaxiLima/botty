@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   const ctx: AgentContext = { env, db, bus, config, llm, memory, chat, mcpConnections, pendingActions };
 
   // 9-11. ingest → loop → server (backfill shares the ingest AdapterMap)
-  const adapters = createAdapters(env);
+  const adapters = createAdapters(env, { db, bus });
   const ingest = createIngest(ctx, adapters);
   const backfill = createBackfill({ db, llm, bus, config }, adapters);
   const loop = createLoop(ctx);

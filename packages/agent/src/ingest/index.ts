@@ -3,7 +3,7 @@ import type { AgentContext } from '../context.js';
 import { createAdapters } from './adapters/index.js';
 import { createScheduler } from './scheduler.js';
 
-export type { AdapterMap, SourceAdapter } from './adapters/index.js';
+export type { AdapterMap, RealAdapterDeps, SourceAdapter } from './adapters/index.js';
 export { createAdapters, createSimAdapter } from './adapters/index.js';
 export { HEURISTIC_PATTERNS, hasSignal, matchSignals } from './heuristics.js';
 export type { HeuristicPattern, SignalKind } from './heuristics.js';
@@ -25,6 +25,9 @@ export interface Ingest {
 
 /** Wire adapters (per BOTTY_MODE) + scheduler + funnel from the agent core.
  * Pass `adapters` to share one AdapterMap with other consumers (backfill). */
-export function createIngest(ctx: AgentContext, adapters = createAdapters(ctx.env)): Ingest {
+export function createIngest(
+  ctx: AgentContext,
+  adapters = createAdapters(ctx.env, { db: ctx.db, bus: ctx.bus }),
+): Ingest {
   return createScheduler({ db: ctx.db, llm: ctx.llm, bus: ctx.bus, config: ctx.config }, adapters);
 }

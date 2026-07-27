@@ -20,7 +20,8 @@ export type LlmTask =
   | 'briefing'
   | 'resolution'
   | 'seal'
-  | 'distill';
+  | 'distill'
+  | 'fetch';
 
 export const DEFAULT_MODELS: Record<LlmTask, string> = {
   chat: 'claude-sonnet-5',
@@ -35,6 +36,9 @@ export const DEFAULT_MODELS: Record<LlmTask, string> = {
   seal: 'claude-haiku-4-5',
   // Backfill distillation is bulk housekeeping over historical threads — cheap tier.
   distill: 'claude-haiku-4-5',
+  // Real-mode source fetch drives MCP connector tools (search, read, normalize) —
+  // needs reliable tool use; haiku proved too flaky for multi-call tool loops.
+  fetch: 'claude-sonnet-5',
 };
 
 // ---------- costs ----------
@@ -64,6 +68,8 @@ export const COST_CATEGORY_BY_KIND: Record<string, CostCategory> = {
   // Session-seal summaries are chat housekeeping, not a morning/evening briefing.
   seal: 'chat',
   distill: 'backfill',
+  // Real-mode connector fetches are part of source intake, like classification/extraction.
+  fetch: 'intake',
 };
 
 export interface ModelPricing {

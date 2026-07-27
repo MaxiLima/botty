@@ -28,6 +28,7 @@ export {
   SdkLlmClient,
   buildChatPrompt,
   matchChatTool,
+  loadSdkQueryFn,
   loadSdkToolServerFactory,
   CHAT_TOOL_SERVER,
   EMPTY_RESPONSE_NUDGE,
