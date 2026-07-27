@@ -11,9 +11,18 @@ describe('parseConfig', () => {
     expect(c.port).toBe(AGENT_PORT);
     expect(c.simPort).toBe(SIM_PORT);
     expect(c.dataDir).toBe(path.join(os.homedir(), '.botty'));
-    expect(c.mode).toBe('sim');
+    expect(c.mode).toBe('real');
     expect(c.agentUrl).toBe(`http://127.0.0.1:${AGENT_PORT}`);
     expect(c.simUrl).toBe(`http://localhost:${SIM_PORT}`);
+  });
+
+  it('mode: real by default, sim via --sim flag or BOTTY_MODE=sim', () => {
+    expect(parseConfig(['start'], {}).mode).toBe('real');
+    expect(parseConfig(['start'], { BOTTY_MODE: 'real' }).mode).toBe('real');
+    expect(parseConfig(['start', '--sim'], {}).mode).toBe('sim');
+    expect(parseConfig(['start'], { BOTTY_MODE: 'sim' }).mode).toBe('sim');
+    // The flag wins over an env var pointing the other way.
+    expect(parseConfig(['start', '--sim'], { BOTTY_MODE: 'real' }).mode).toBe('sim');
   });
 
   it('parses command and positional args', () => {

@@ -56,6 +56,7 @@ Flags win over env vars; env vars keep their existing semantics (README table).
 | `--port <n>` | `AGENT_PORT` | `4820` (shared constant) | agent HTTP/WS port |
 | `--sim-port <n>` | `BOTTY_SIM_PORT` | `4821` (shared constant) | sim port; also derives `BOTTY_SIM_URL` for the agent unless the env var is set explicitly |
 | `--data-dir <path>` | `BOTTY_DATA_DIR` | `~/.botty` | pidfiles + logs live under it too |
+| `--sim` | `BOTTY_MODE=sim` | off (real mode) | run against the built-in simulator; the flag wins over the env var |
 | `--mock-llm` | `BOTTY_MOCK_LLM` | off | passed through to spawned processes |
 | `--no-start` | — | — | `tui`/`open`: never boot the daemon implicitly |
 | `--with-sim` | — | — | `serve`: also spawn the sim (detached) |
@@ -67,8 +68,12 @@ Flags win over env vars; env vars keep their existing semantics (README table).
 | `--no-wait` | — | — | `backfill`: start and return without polling |
 | `-f`, `--follow` | — | — | `logs`: tail |
 
-`BOTTY_MODE` is honored (`sim` default). Under `real` (not implemented yet) the
-sim is never spawned and sim rows disappear from `status`.
+**Real mode is the CLI default since 2026-07-27** (gmail/gcal poll through the
+user's claude.ai connectors — `docs/specs/ingestion.md`): a bare `botty start`
+runs the actual app; the sim is never spawned and sim rows disappear from
+`status`/`doctor`. `--sim` or `BOTTY_MODE=sim` opts into the simulator (the
+flag wins over the env var). Dev npm scripts (`dev:agent`, `sandbox`, tests)
+are unaffected — the agent's own env default remains `sim`.
 
 ## Process management & safety model
 

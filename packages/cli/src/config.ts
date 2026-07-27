@@ -48,7 +48,9 @@ export const HELP = `botty — start and drive the botty daemon (agent + sim) an
 
 Usage: botty <command> [flags]
 
-  start              boot the daemon detached (idempotent), print the app URL
+  start              boot the daemon detached (idempotent), print the app URL.
+                     Runs REAL mode by default (gmail/gcal via your claude.ai
+                     connectors); --sim boots the simulator instead
   stop               stop the processes botty started (pidfile-owned only)
   restart            stop + start
   status             per-process pid/port/ownership + agent health, sim state
@@ -72,6 +74,8 @@ Flags:
   --port <n>         agent port         (default $AGENT_PORT or ${AGENT_PORT})
   --sim-port <n>     sim port           (default $BOTTY_SIM_PORT or ${SIM_PORT})
   --data-dir <path>  data directory     (default $BOTTY_DATA_DIR or ~/.botty)
+  --sim              run against the built-in simulator (BOTTY_MODE=sim);
+                     without it botty runs real mode
   --mock-llm         run with the deterministic LLM stub (BOTTY_MOCK_LLM=1)
   --no-start         tui/open: fail instead of starting the daemon implicitly
   --with-sim         serve: also spawn the sim (detached) first
@@ -107,7 +111,7 @@ const COMMAND_ALIASES: Record<string, Command> = {
 };
 
 const VALUE_FLAGS = ['--port', '--sim-port', '--data-dir', '--source', '--days', '--max-llm-calls'] as const;
-const BOOL_FLAGS = ['--mock-llm', '--no-start', '--with-sim', '--force', '--probe', '--no-wait', '-f', '--follow', '-h', '--help', '-V', '--version'] as const;
+const BOOL_FLAGS = ['--sim', '--mock-llm', '--no-start', '--with-sim', '--force', '--probe', '--no-wait', '-f', '--follow', '-h', '--help', '-V', '--version'] as const;
 
 function truthy(v: string | undefined): boolean {
   return v === '1' || v?.toLowerCase() === 'true';
@@ -174,7 +178,10 @@ export function parseConfig(argv: string[], env: Record<string, string | undefin
     port,
     simPort,
     dataDir,
-    mode: env.BOTTY_MODE === 'real' ? 'real' : 'sim',
+    // Real mode is the default since the 2026-07-27 gmail/gcal connector
+    // drivers: `botty start` runs the actual app. `--sim` (or BOTTY_MODE=sim)
+    // opts into the simulator; dev npm scripts keep their own sim default.
+    mode: bools.has('--sim') || env.BOTTY_MODE === 'sim' ? 'sim' : 'real',
     mockLlm: bools.has('--mock-llm') || truthy(env.BOTTY_MOCK_LLM),
     noStart: bools.has('--no-start'),
     withSim: bools.has('--with-sim'),

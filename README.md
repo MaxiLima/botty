@@ -43,7 +43,8 @@ One installable command wraps all of the above (spec: `docs/specs/cli.md`):
 ```sh
 npm link -w @botty/cli   # once — links the global `botty` bin (undo: npm unlink -g @botty/cli)
 
-botty start              # boot sim + agent detached (builds the web UI if missing), print the URL
+botty start              # boot the agent in REAL mode (default; builds the web UI if missing)
+botty start --sim        # sim mode instead: boots simulator + agent against fake sources
 botty tui                # attach the terminal client (starts the daemon if needed)
 botty open               # open the web app in the browser (aliases: gui, web)
 botty status             # pid/port/ownership + agent health, sim state
@@ -73,7 +74,7 @@ per-token API bill. Set `BOTTY_MOCK_LLM=1` to skip the SDK entirely (see the env
 ## Real mode (Gmail + Google Calendar via claude.ai connectors)
 
 ```sh
-BOTTY_MODE=real botty start        # or npm run dev:agent with BOTTY_MODE=real
+botty start                        # real mode is the CLI default (--sim for the simulator)
 ```
 
 Real-mode gmail/gcal polls run one fetch-only Agent SDK call each, using the **claude.ai
