@@ -1,5 +1,10 @@
 node_modules/
 dist/
+# The web UI ships pre-built so runtime installs never need vite/postcss
+# (restricted-registry machines install with --omit=dev). Rebuild + commit via
+# `npm run build -w @botty/web` — but never while a live agent serves it.
+!packages/web/dist/
+!packages/web/dist/**
 *.log
 .DS_Store
 .env

@@ -19,6 +19,24 @@ mode and the way to try everything without touching real data.
 | A native build toolchain (Xcode Command Line Tools on macOS; `build-essential` on Linux) | `better-sqlite3` compiles a native addon on install |
 | `terminal-notifier` (`brew install terminal-notifier`, macOS only) | proactive nudges' primary desktop-banner path — optional, but see `docs/TESTING.md` §1 if banners don't show |
 
+## Installing where npm is proxied/restricted (corporate registries)
+
+Runtime installs don't need any build tooling: the web UI ships pre-built in
+`packages/web/dist`, so
+
+```sh
+npm install --omit=dev     # runtime deps only — no vite/postcss/vitest
+npm link -w @botty/cli
+botty start
+```
+
+is a complete install. The lockfile deliberately pins a few transitive deps to
+versions old enough for mirror quarantine windows (`overrides` in the root
+`package.json`: `@modelcontextprotocol/sdk` 1.29.0, `@hono/node-server` 1.19.14 —
+re-accepting two Windows-only moderate advisories in code paths botty never
+executes; `postcss` 8.5.18). Revisit the pins once your mirror has synced newer
+versions. Dev work (tests, web rebuild) needs a full `npm install`.
+
 ## Quickstart (sim mode — no credentials needed)
 
 ```sh
