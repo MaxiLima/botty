@@ -128,7 +128,7 @@ Every fetch is recorded in the Inspector (`ai_decisions` kind `fetch`).
 | Var | Default | Notes |
 |---|---|---|
 | `BOTTY_DATA_DIR` | `~/.botty` | DB, config, logs, attachments all live under here |
-| `BOTTY_MODE` | `sim` | `sim` \| `real` — `real` is not implemented yet, see the reality check above |
+| `BOTTY_MODE` | `sim` | `sim` \| `real` - real polls Gmail + Google Calendar via your claude.ai connectors (see Real mode above); Slack/Jira/GitHub drivers throw until credentialed |
 | `BOTTY_MOCK_LLM` | unset (off) | `1`/`true` swaps in a deterministic stub — free/instant, but no `tool_use` events and judgment always skips |
 | `BOTTY_SIM_URL` | `http://localhost:4821` | agent → sim base URL, sim-mode adapters only |
 | `AGENT_PORT` | `4820` (shared `AGENT_PORT` constant) | agent's HTTP/WS port; also what the TUI defaults to if no `--port`/`BOTTY_URL` |
