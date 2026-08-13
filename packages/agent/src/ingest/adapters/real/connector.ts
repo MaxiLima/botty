@@ -3,6 +3,7 @@ import type { SourceId } from '@botty/shared';
 import type { DecisionRecorder, ModelResolver } from '../../../llm/types.js';
 import { jsonInstructionFor, parseStructuredText } from '../../../llm/parse.js';
 import { withInactivityTimeout, type QueryFn } from '../../../llm/sdk.js';
+import { subscriptionEnv } from '../../../subscription-env.js';
 
 /**
  * Real-mode fetch through claude.ai MCP connectors (Gmail / Google Calendar):
@@ -64,18 +65,9 @@ export interface ConnectorFetchRequest<T> {
   connectorTools: string[];
 }
 
-/** process.env minus every Anthropic auth override, so the SDK falls back to
- * the user's Claude subscription login (required for claude.ai connectors). */
-export function connectorEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value === undefined) continue;
-    if (key === 'ANTHROPIC_API_KEY' || key === 'ANTHROPIC_AUTH_TOKEN') continue;
-    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) continue;
-    env[key] = value;
-  }
-  return env;
-}
+/** Alias for the shared env-stripping helper (now in ../../../subscription-env.ts,
+ * reused by the chat path too). Kept so existing imports/tests keep resolving. */
+export const connectorEnv = subscriptionEnv;
 
 export type ConnectorFetch = <T>(req: ConnectorFetchRequest<T>) => Promise<T>;
 
@@ -99,7 +91,7 @@ export function createConnectorFetch(deps: ConnectorFetchDeps): ConnectorFetch {
         disallowedTools: FETCH_DISALLOWED_TOOLS,
         maxTurns: FETCH_MAX_TURNS,
         persistSession: false,
-        env: connectorEnv(),
+        env: subscriptionEnv(),
       },
     });
     let assistantText = '';

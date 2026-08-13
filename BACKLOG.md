@@ -257,6 +257,20 @@ boundary markers. A fuller sandbox story is still open if/when tools grow beyond
 
 ## P2 — known seams (from the build, all minor)
 
+- **Chat mutating tools: approval-route instead of deny** (fast-follow to the full-surface chat change,
+  `docs/specs/chat-surface.md`): today the valve removes `Bash`/`Write`/`Edit`/`NotebookEdit` from the
+  chat surface outright (`llm/tool-policy.ts`). Better UX: keep them available but route them through
+  the existing `pending_actions` consent gate - `chatCanUseTool` (or a per-tool policy behind it)
+  enqueues instead of allowing, and the user approves mid-turn via the same approval-card shape
+  `action`-mode MCP tools already use (`specs/mcp.md`). Turns a hard "no" into "ask first". The
+  `canUseTool` callback is already the wired hook, so this needs no query-wiring change.
+- **Extend the full surface to the proactive loop** (optional, larger): the full Claude Code surface is
+  chat-only by design - the autonomous paths stay locked (`tools: []`, `settingSources: []`). Giving
+  the loop the same surface would let judgment act (draft a reply, file a Jira, …), but every
+  autonomous action runs unattended over untrusted ingested content, so it would need every action
+  structurally gated (consent queue / dry-run), not just the exec+file-mutation valve chat uses. Do
+  not lift the lock without that gating.
+
 - **Settings UI for model routing & pricing**: `llm.models` (task→model) and `llm.pricing`
   (USD/MTok overrides) are settings-only today — editable via `PUT /api/settings`, no UI.
   Both API clients already expose `settings()`/`patchSettings()`; add a "Models" section to

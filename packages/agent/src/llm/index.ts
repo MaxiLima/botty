@@ -11,6 +11,7 @@ import {
   type ToolServerFactory,
 } from './sdk.js';
 import type { DecisionRecorder, LlmClient, ModelResolver } from './types.js';
+import { subscriptionEnv } from '../subscription-env.js';
 
 export type {
   ChatStreamEvent,
@@ -43,7 +44,9 @@ export {
 export { parseStructuredText, JSON_ONLY_INSTRUCTION } from './parse.js';
 
 export interface CreateLlmOptions {
-  env: Pick<AgentEnv, 'mockLlm'>;
+  /** `workspaceDir` is the chat cwd; optional so mock-mode callers (tests) can
+   *  pass just `{ mockLlm }` — it's never read on the mock path. */
+  env: Pick<AgentEnv, 'mockLlm'> & Partial<Pick<AgentEnv, 'workspaceDir'>>;
   db: Db;
   bus: Bus;
   /** Inject a stub SDK boundary for tests. Ignored when env.mockLlm is true. */
@@ -82,5 +85,9 @@ export async function createLlm(opts: CreateLlmOptions): Promise<LlmClient> {
   // A stubbed queryFn (tests) must not drag the real SDK in via the tool factory.
   const toolServerFactory =
     opts.toolServerFactory ?? (opts.queryFn ? undefined : await loadSdkToolServerFactory());
-  return new SdkLlmClient({ queryFn, db: opts.db, modelFor, record, toolServerFactory });
+  // Chat runs the full Claude Code surface in a dedicated workspace cwd, under the
+  // subscription login (API-key auth stripped so claude.ai connectors load).
+  const cwd = opts.env.workspaceDir ?? process.cwd();
+  const chatEnv = subscriptionEnv(process.env);
+  return new SdkLlmClient({ queryFn, db: opts.db, modelFor, record, toolServerFactory, cwd, chatEnv });
 }

@@ -50,6 +50,12 @@ first** — it holds a WAL lock. Replay recorded AI decisions with
 - Config lives in `~/.botty/config/`: markdown (`persona.md`, `team.md`, `heartbeat.md`) plus
   `mcp.json` (external MCP servers/tools + the consent gate for `action`-mode tools — see
   `docs/specs/mcp.md`). All four are hot-reloaded — no restart needed to test config changes.
+- **Interactive chat runs the full Claude Code surface**: it inherits the user's `~/.claude` Skills +
+  MCP connectors via `settingSources: ['user']` and appends botty's context onto the `claude_code`
+  system-prompt preset. The autonomous paths (funnel/judgment `structured()`, real-mode fetch,
+  proactive loop) stay locked (`tools: []`, `settingSources: []`). The safety valve that strips exec +
+  file-mutation from the chat surface lives in `packages/agent/src/llm/tool-policy.ts`. Full mechanism:
+  `docs/specs/chat-surface.md`.
 
 ## Doc map
 

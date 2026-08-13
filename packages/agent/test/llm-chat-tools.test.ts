@@ -117,7 +117,7 @@ describe('SdkLlmClient chat tool wiring', () => {
     { type: 'result', subtype: 'success', is_error: false, result: resultText, usage: { input_tokens: 1, output_tokens: 1 } },
   ];
 
-  it('passes mcpServers + allowedTools from the factory and keeps built-ins disabled', async () => {
+  it('rides botty mcpServers + allowedTools alongside the inherited Claude Code surface', async () => {
     const calls: { options: Record<string, unknown> }[] = [];
     const queryFn: QueryFn = ({ options }) => {
       calls.push({ options: options ?? {} });
@@ -135,7 +135,9 @@ describe('SdkLlmClient chat tool wiring', () => {
     await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', tools, onEvent: () => {} });
 
     expect(factoryArgs[0]).toBe(tools);
-    expect(calls[0]!.options.tools).toEqual([]);
+    // Built-ins are no longer force-disabled — `tools: []` is gone from the chat path.
+    expect(calls[0]!.options.tools).toBeUndefined();
+    // botty's own tools still ride alongside the inherited surface.
     expect(calls[0]!.options.allowedTools).toEqual(['mcp__botty__capture_task']);
     expect(Object.keys(calls[0]!.options.mcpServers as Record<string, unknown>)).toEqual([CHAT_TOOL_SERVER]);
   });

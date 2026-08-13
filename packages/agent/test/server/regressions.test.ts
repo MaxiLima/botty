@@ -48,6 +48,7 @@ async function setup(llmOverride?: (base: LlmClient) => LlmClient): Promise<Harn
     dbPath: ':memory:',
     configDir: path.join(dataDir, 'config'),
     configArchiveDir: path.join(dataDir, 'config', 'archive'),
+    workspaceDir: path.join(dataDir, 'workspace'),
     logsDir: path.join(dataDir, 'logs'),
     mode: 'sim',
     simUrl: 'http://localhost:4821',

@@ -93,6 +93,18 @@ otherwise your logged-in Claude Code / `ant auth login` session). In practice: i
 Code) already works on this machine, botty's real-LLM calls will too — no separate setup, no
 per-token API bill. Set `BOTTY_MOCK_LLM=1` to skip the SDK entirely (see the env var table below).
 
+## Chat has the full Claude Code surface
+
+Interactive chat runs the **full Claude Code tool surface** - built-in tools, your `~/.claude`
+Skills, and the claude.ai MCP connectors you've already linked (Gmail, Calendar, Drive, Slack, ...
+via `settingSources: ['user']`) - so botty acts like a real assistant, not a four-tool bot. A safety
+valve removes shell exec and file mutation (`Bash`/`Write`/`Edit`/`NotebookEdit`) from that surface,
+because chat auto-runs tools over untrusted ingested content (email/Slack/calendar) and those tools
+would be a prompt-injection → execution path; reads, searches, connectors, and skills auto-run. Chat
+sessions run in a scratch `~/.botty/workspace` cwd, isolated from your real repos. The **autonomous
+loop** (funnel, judgment, real-mode fetch) is deliberately unchanged and stays locked - no built-ins,
+no inherited config. Details: `docs/specs/chat-surface.md`.
+
 ## Real mode (Gmail + Google Calendar via claude.ai connectors)
 
 ```sh
@@ -168,7 +180,7 @@ replayable via the CLI above.
 
 `docs/ARCHITECTURE.md` (how the pieces fit together, with diagrams) · `docs/TESTING.md` (behavior
 recipes — notification troubleshooting is in §1) · `BACKLOG.md` (prioritized pending work) ·
-`docs/specs/*` (per-subsystem contracts: api, data-model, ingestion, loop, mcp, tui, web-ui, …).
+`docs/specs/*` (per-subsystem contracts: api, chat-surface, data-model, ingestion, loop, mcp, tui, web-ui, …).
 
 ## Layout
 

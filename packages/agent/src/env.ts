@@ -12,6 +12,9 @@ export interface AgentEnv {
   /** Snapshots of previous config versions live here. */
   configArchiveDir: string;
   logsDir: string;
+  /** Scratch cwd for interactive chat sessions (Claude Code auto-memory,
+   *  session files) — namespaced away from the owner's real repos. */
+  workspaceDir: string;
   mode: 'sim' | 'real';
   simUrl: string;
   mockLlm: boolean;
@@ -46,6 +49,7 @@ export function loadEnv(overrides: Partial<AgentEnv> = {}): AgentEnv {
     configDir: overrides.configDir ?? path.join(dataDir, 'config'),
     configArchiveDir: overrides.configArchiveDir ?? path.join(dataDir, 'config', 'archive'),
     logsDir: overrides.logsDir ?? path.join(dataDir, 'logs'),
+    workspaceDir: overrides.workspaceDir ?? path.join(dataDir, 'workspace'),
     mode,
     simUrl: overrides.simUrl ?? process.env.BOTTY_SIM_URL ?? 'http://localhost:4821',
     mockLlm: overrides.mockLlm ?? truthy(process.env.BOTTY_MOCK_LLM),
@@ -56,6 +60,7 @@ export function loadEnv(overrides: Partial<AgentEnv> = {}): AgentEnv {
   fs.mkdirSync(env.configDir, { recursive: true });
   fs.mkdirSync(env.configArchiveDir, { recursive: true });
   fs.mkdirSync(env.logsDir, { recursive: true });
+  fs.mkdirSync(env.workspaceDir, { recursive: true });
 
   seedConfigTemplates(env.configDir, env.mode);
   return env;

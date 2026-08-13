@@ -144,8 +144,10 @@ handler writes the task directly (source `chat`). Keep this minimal in v1.
 ## Chat tools
 
 Location: `packages/agent/src/chat/tools.ts` (`createChatTools`). Four model-callable SDK custom
-tools available on every chat turn (external MCP tools from `mcp.json` are additional and
-per-turn-derived — see `specs/mcp.md`). Each is a never-throwing `ChatToolSpec`: a bad call or a
+tools available on every chat turn. They are botty's own task/memory tools; they ride *alongside*
+the full Claude Code surface chat now inherits (built-ins + `~/.claude` Skills + claude.ai
+connectors - see `specs/chat-surface.md`) and the per-turn external MCP tools from `mcp.json`
+(`specs/mcp.md`), not in place of them. Each is a never-throwing `ChatToolSpec`: a bad call or a
 missing id comes back as `{ error }` data rather than killing the turn; the SDK wrapping
 (`tool()` + `createSdkMcpServer()`) lives in `llm/sdk.ts`, and the mock LLM invokes `execute()`
 directly.

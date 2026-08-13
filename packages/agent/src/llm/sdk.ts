@@ -11,6 +11,8 @@ import {
   type TokenUsage,
 } from './types.js';
 import { jsonInstructionFor, parseStructuredText } from './parse.js';
+import { FILE_MUTATING_TOOLS, chatCanUseTool } from './tool-policy.js';
+import { subscriptionEnv } from '../subscription-env.js';
 
 /**
  * Structural view of the SDK message stream — only the fields we consume.
@@ -231,6 +233,13 @@ export class SdkLlmClient implements LlmClient {
       record: DecisionRecorder;
       /** Wraps req.tools into an SDK MCP server; absent → chat runs tool-less. */
       toolServerFactory?: ToolServerFactory;
+      /** cwd for chat sessions (auto-memory/session files namespace here).
+       *  Optional so replay/tests — which only call structured() — can omit it. */
+      cwd?: string;
+      /** Ambient env for chat, with Anthropic API-key auth stripped so the SDK
+       *  uses the subscription login (claude.ai connectors need it). Optional
+       *  for the same reason; defaults to a stripped process.env. */
+      chatEnv?: Record<string, string>;
     },
   ) {}
 
@@ -281,20 +290,29 @@ export class SdkLlmClient implements LlmClient {
   private async chatAttempt(req: ChatTurnRequest, resume: string | null): Promise<ChatTurnResult> {
     const model = this.deps.modelFor('chat');
     const started = Date.now();
-    // Chat tools ride in as an in-process SDK MCP server; `tools: []` still
-    // disables every built-in tool (Bash, Read, …) — only our four are exposed.
+    // Chat gets the FULL Claude Code surface — built-in tools, the user's Skills,
+    // and inherited claude.ai MCP connectors (settingSources: ['user']) — so botty
+    // acts like a real assistant. botty's own persona/memory is appended onto the
+    // claude_code preset. The safety valve (llm/tool-policy.ts) then strips exec +
+    // file mutation and auto-runs everything else. botty's in-process chat tools
+    // still ride alongside as an SDK MCP server when present.
     const toolWiring =
       req.tools?.length && this.deps.toolServerFactory ? this.deps.toolServerFactory(req.tools) : null;
     const handle = this.deps.queryFn({
       prompt: buildChatPrompt(req),
       options: {
         model,
-        systemPrompt: req.systemPrompt,
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: req.systemPrompt },
         includePartialMessages: true,
-        tools: [],
+        settingSources: ['user'],
+        skills: 'all',
         ...(toolWiring ? { mcpServers: toolWiring.mcpServers, allowedTools: toolWiring.allowedTools } : {}),
-        permissionMode: 'dontAsk',
-        maxTurns: 8,
+        disallowedTools: [...FILE_MUTATING_TOOLS],
+        permissionMode: 'default',
+        canUseTool: chatCanUseTool,
+        cwd: this.deps.cwd ?? process.cwd(),
+        env: this.deps.chatEnv ?? subscriptionEnv(),
+        maxTurns: 30,
         ...(resume ? { resume } : {}),
       },
     });

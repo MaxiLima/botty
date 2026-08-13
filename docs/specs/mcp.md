@@ -5,6 +5,14 @@ Location: `packages/agent/src/config/mcp.ts` (config schema/parsing), `packages/
 user-declared external MCP servers (stdio only in v1), with `action`-mode tools always held for
 explicit user approval before anything actually runs — the model can queue, never send.
 
+This is botty's **own curated** MCP surface: a default-deny, per-tool allowlist that botty owns and
+consent-gates, spawned as its own stdio instances. It is distinct from the **inherited full surface**
+chat also gets from the user's `~/.claude` config via `settingSources: ['user']` (Skills + claude.ai
+connectors + the user's own MCP servers) - see `specs/chat-surface.md`. The two coexist on a chat
+turn: `mcp.json` tools attach as the in-process `mcp__botty__*` server described here, alongside the
+inherited surface. Curate here anything you want consent-gated (`action` mode) or that isn't already
+in `~/.claude`.
+
 ## `~/.botty/config/mcp.json`
 
 JSON, not markdown, so it lives outside the `persona.md`/`team.md`/`heartbeat.md` trio (its own

@@ -168,6 +168,28 @@ describe('SdkLlmClient.chatTurn', () => {
     expect(db.listAiDecisions({ kind: 'chat_turn' })).toHaveLength(2);
   });
 
+  it('runs chat with the full Claude Code surface behind the safety valve', async () => {
+    const calls: { prompt: string; options: Record<string, unknown> }[] = [];
+    const { db, client } = makeClient(['hi'], calls);
+    const session = db.createSession();
+    await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'PERSONA-TEXT', onEvent: () => {} });
+    const o = calls[0]!.options;
+    // Built-ins restored (no more `tools: []`), Skills + user settings inherited.
+    expect(o.tools).toBeUndefined();
+    expect(o.settingSources).toEqual(['user']);
+    expect(o.skills).toBe('all');
+    // Persona/memory is appended onto the claude_code preset.
+    expect(o.systemPrompt).toEqual({ type: 'preset', preset: 'claude_code', append: 'PERSONA-TEXT' });
+    // Safety valve: default permission mode + auto-allow gate, exec/file mutation gone.
+    expect(o.permissionMode).toBe('default');
+    expect(typeof o.canUseTool).toBe('function');
+    expect(o.disallowedTools).toEqual(expect.arrayContaining(['Bash', 'Write', 'Edit', 'NotebookEdit']));
+    // Dedicated cwd + subscription env, and enough turns for skills/subagents.
+    expect(typeof o.cwd).toBe('string');
+    expect(o.env).toBeDefined();
+    expect(o.maxTurns).toBe(30);
+  });
+
   it('records an ai_decisions error row when the stream throws mid-turn', async () => {
     const db = new Db(':memory:');
     const bus = createBus();
