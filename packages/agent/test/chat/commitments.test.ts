@@ -6,6 +6,7 @@ import {
   buildCommitmentPrompt,
   COMMITMENT_SYSTEM_MARKER,
   extractCommitments,
+  formatLocalIsoWithOffset,
   hasCommitmentSignal,
   resolveDueAt,
 } from '../../src/chat/commitments.js';
@@ -49,6 +50,27 @@ describe('hasCommitmentSignal — cheap heuristic gate', () => {
 
   it('matches the test marker even without natural time language', () => {
     expect(hasCommitmentSignal('[[commitment: something | 2026-07-10T00:00:00.000Z]]')).toBe(true);
+  });
+});
+
+describe('formatLocalIsoWithOffset — chat prompt "Current time" (2026-08-15 set_reminder tz bug)', () => {
+  const INSTANT = '2026-08-15T19:52:00.000Z';
+
+  it('renders local wall-clock with the correct negative offset', () => {
+    expect(formatLocalIsoWithOffset(INSTANT, 'America/Argentina/Buenos_Aires')).toBe(
+      '2026-08-15T16:52:00-03:00',
+    );
+  });
+
+  it('handles positive and half-hour offsets (day rollover included)', () => {
+    expect(formatLocalIsoWithOffset(INSTANT, 'Asia/Tokyo')).toBe('2026-08-16T04:52:00+09:00');
+    expect(formatLocalIsoWithOffset(INSTANT, 'Asia/Kolkata')).toBe('2026-08-16T01:22:00+05:30');
+  });
+
+  it('round-trips through resolveDueAt to the same instant', () => {
+    for (const tz of ['America/Argentina/Buenos_Aires', 'Asia/Tokyo', 'UTC']) {
+      expect(resolveDueAt(formatLocalIsoWithOffset(INSTANT, tz), tz)).toBe(INSTANT);
+    }
   });
 });
 

@@ -1,4 +1,6 @@
 import type { Task } from '@botty/shared';
+// Acyclic: chat/commitments.ts imports only shared/db/llm types, never memory.
+import { formatLocalIsoWithOffset } from '../chat/commitments.js';
 import type { Db, FtsHit } from '../db/index.js';
 import type { HeartbeatConfig } from '../config/parse.js';
 import type { McpConfig } from '../config/mcp.js';
@@ -80,8 +82,14 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
     buildChatSystemPrompt(userMessage) {
       const sections: string[] = [];
 
+      // Local wall-clock WITH numeric offset — never a bare UTC instant: the model
+      // reads bare-UTC-next-to-a-zone-name as local time and appends the offset,
+      // producing set_reminder dueAts hours in the future (2026-08-15 bug; same
+      // class as chat/commitments.ts's 2026-07-09 CURRENT_TIME fix).
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      sections.push(`Current time: ${new Date().toISOString()} (${tz})`);
+      sections.push(
+        `Current time: ${formatLocalIsoWithOffset(new Date().toISOString(), tz)} (${tz}, local time with UTC offset — compute exact instants like set_reminder dueAt from THIS time, keeping the offset)`,
+      );
 
       const persona = config.persona().trim();
       if (persona) sections.push(clip(persona, PERSONA_CAP));

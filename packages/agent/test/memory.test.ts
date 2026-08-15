@@ -14,11 +14,14 @@ function setup() {
 }
 
 describe('buildChatSystemPrompt', () => {
-  it('starts with the current time so the model can ground "today"', () => {
+  it('starts with the current LOCAL time with numeric offset so exact instants resolve correctly', () => {
     const { memory } = setup();
     const prompt = memory.buildChatSystemPrompt('anything');
-    const today = new Date().toISOString().slice(0, 10);
-    expect(prompt.startsWith(`Current time: ${today}`)).toBe(true);
+    // Local wall-clock date (not necessarily the UTC date) + a numeric offset —
+    // a bare UTC instant here caused set_reminder dueAts hours late (2026-08-15).
+    const firstLine = prompt.split('\n', 1)[0]!;
+    expect(firstLine).toMatch(/^Current time: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} \(/);
+    expect(firstLine).not.toMatch(/Z \(/); // never a bare-UTC instant again
   });
 
   it('annotates closed-task recall hits with their status instead of presenting them as live', () => {

@@ -82,6 +82,26 @@ export function defaultTimeZone(): string {
   }
 }
 
+/**
+ * Format an instant as a full local ISO string WITH numeric offset
+ * ("2026-08-15T16:52:25-03:00") in `timeZone`. Used by the chat system prompt's
+ * "Current time" line (memory/index.ts): handing the model a bare UTC instant
+ * next to a zone name made it read the UTC digits as local wall-clock and
+ * append the offset — set_reminder dueAts landed hours late (2026-08-15 bug,
+ * same class as this file's 2026-07-09 CURRENT_TIME fix). A local time carrying
+ * its own offset is unambiguous AND directly usable for dueAt arithmetic.
+ */
+export function formatLocalIsoWithOffset(iso: string, timeZone: string): string {
+  // Round: tzOffsetMinutes is fractional when `iso` carries milliseconds (the
+  // formatToParts round-trip drops them); real-world offsets are whole minutes.
+  const offsetMin = Math.round(tzOffsetMinutes(Date.parse(iso), timeZone));
+  const sign = offsetMin < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMin);
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm = String(abs % 60).padStart(2, '0');
+  return `${formatLocalWallClock(iso, timeZone)}${sign}${hh}:${mm}`;
+}
+
 /** Format an instant as a naive local wall-clock string ("YYYY-MM-DDTHH:MM:SS") in `timeZone`. */
 function formatLocalWallClock(iso: string, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-US', {
