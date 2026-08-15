@@ -2,6 +2,7 @@ import type { AgentContext } from '../context.js';
 import { runBriefing, type BriefKind } from './briefings.js';
 import { createSweepState, runResolutionSweep, type SweepResult } from './resolution-sweep.js';
 import { createResponseTracker } from './response-tracker.js';
+import { createReminderScheduler } from './reminders.js';
 import { runTick, type TickTrigger } from './tick.js';
 import { isWithinWorkingHours, msUntilNextTime } from './time.js';
 
@@ -23,6 +24,11 @@ export { executeActions, type ExecutedAction } from './actions.js';
 export { runTick, type TickDeps, type TickTrigger } from './tick.js';
 export { runBriefing, buildBriefingPrompt, type BriefKind } from './briefings.js';
 export { createResponseTracker, classifyMessage, type ResponseTracker } from './response-tracker.js';
+export {
+  createReminderScheduler,
+  REMINDER_SCAN_INTERVAL_MS,
+  type ReminderScheduler,
+} from './reminders.js';
 export {
   runResolutionSweep,
   createSweepState,
@@ -48,6 +54,7 @@ export interface Loop {
 export function createLoop(ctx: AgentContext): Loop {
   const { db, bus, config, llm, memory } = ctx;
   const tracker = createResponseTracker({ db, bus, config });
+  const reminders = createReminderScheduler({ db, bus });
   const tickDeps = { db, bus, config, llm, memory, tracker };
 
   let started = false;
@@ -208,6 +215,9 @@ export function createLoop(ctx: AgentContext): Loop {
       if (started) return;
       started = true;
       tracker.start();
+      // Explicit set_reminder deliveries — precise-time, judgment-free, and
+      // deliberately NOT behind the working/quiet-hours gates (see reminders.ts).
+      reminders.start();
       scheduleNextTick();
       scheduleSweep();
       scheduleBriefing('morning_brief');
@@ -235,6 +245,7 @@ export function createLoop(ctx: AgentContext): Loop {
       sweepTimer = null;
       for (const t of briefTimers.values()) clearTimeout(t);
       briefTimers.clear();
+      reminders.stop();
       tracker.stop();
     },
     runNow() {

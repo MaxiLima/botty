@@ -55,6 +55,31 @@ describe('MockLlmClient !tool trigger', () => {
     expect(res.text).toContain(tasks[0]!.id);
   });
 
+  it('set_reminder inserts an explicit commitment at the exact UTC instant', async () => {
+    const { db, events, turn } = await setup();
+    const res = await turn(
+      '!tool set_reminder {"description":"write to Ana about the renewal","dueAt":"2030-01-01T16:45:00-03:00"}',
+    );
+
+    const toolUse = events.find((e) => e.type === 'tool_use');
+    expect(toolUse).toEqual({ type: 'tool_use', name: 'set_reminder', summary: 'write to Ana about the renewal' });
+
+    const open = db.openCommitments();
+    expect(open).toHaveLength(1);
+    expect(open[0]!.kind).toBe('explicit');
+    expect(open[0]!.dueAt).toBe('2030-01-01T19:45:00.000Z'); // offset normalized to UTC
+    expect(res.text).toContain('"reminderId"');
+  });
+
+  it('set_reminder rejects a past dueAt without inserting anything', async () => {
+    const { db, turn } = await setup();
+    const res = await turn(
+      '!tool set_reminder {"description":"too late","dueAt":"2020-01-01T00:00:00Z"}',
+    );
+    expect(res.text).toContain('must be in the future');
+    expect(db.openCommitments()).toHaveLength(0);
+  });
+
   it('unknown tool name yields a readable text reply, no tool_use event', async () => {
     const { events, turn } = await setup();
     const res = await turn('!tool frobnicate {"x":1}');
@@ -298,6 +323,7 @@ describe('loadSdkToolServerFactory (real Agent SDK)', () => {
     expect(wiring.allowedTools).toEqual([
       'mcp__botty__capture_task',
       'mcp__botty__task_action',
+      'mcp__botty__set_reminder',
       'mcp__botty__memory_search',
       'mcp__botty__session_search',
     ]);

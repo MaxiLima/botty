@@ -184,6 +184,32 @@ export function createChatTools(deps: ChatToolDeps): ChatToolSpec[] {
     },
   });
 
+  const setReminder = defineTool({
+    name: 'set_reminder',
+    description:
+      'Set an exact-time reminder ("remind me in 2 minutes", "avisame a las 4pm") — delivered as a notification at precisely that moment, any time of day, independent of the task board and the proactive loop. ' +
+      'Compute dueAt from the current local time given above. For durable work items (things to track until done) use capture_task instead; use set_reminder when the user wants a ping at a specific moment.',
+    schema: z.object({
+      description: z.string().min(1).describe('What to remind the user about, in their own words'),
+      dueAt: z
+        .string()
+        .datetime({ offset: true, message: 'must be an ISO 8601 datetime with offset/zone, e.g. 2026-08-15T16:45:00-03:00' })
+        .describe('Exact instant to deliver, ISO 8601 with offset (e.g. "2026-08-15T16:45:00-03:00"). Must be in the future.'),
+    }),
+    summarize: (input) => clip(input.description, 80),
+    run(input) {
+      const ts = Date.parse(input.dueAt);
+      if (Number.isNaN(ts)) return { error: `invalid dueAt: ${input.dueAt}` };
+      if (ts <= Date.now()) return { error: `dueAt must be in the future: ${input.dueAt}` };
+      const commitment = db.insertCommitment({
+        description: input.description,
+        dueAt: new Date(ts).toISOString(),
+        kind: 'explicit',
+      });
+      return { reminderId: commitment.id, description: commitment.description, dueAt: commitment.dueAt };
+    },
+  });
+
   const memorySearch = defineTool({
     name: 'memory_search',
     description:
@@ -274,5 +300,5 @@ export function createChatTools(deps: ChatToolDeps): ChatToolSpec[] {
     },
   });
 
-  return [captureTask, taskAction, memorySearch, sessionSearch];
+  return [captureTask, taskAction, setReminder, memorySearch, sessionSearch];
 }

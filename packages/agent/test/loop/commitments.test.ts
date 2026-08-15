@@ -74,6 +74,24 @@ function insertCommitmentAt(db: Db, opts: { description: string; dueAt: string; 
 }
 
 describe('eligibleCommitments', () => {
+  it("excludes kind='explicit' reminders — those belong to loop/reminders.ts, not tick judgment", () => {
+    const db = new Db(':memory:');
+    const now = '2026-07-09T12:00:00.000Z';
+    const explicit = db.insertCommitment({
+      description: 'explicit reminder, due and old enough',
+      dueAt: '2026-07-09T11:00:00.000Z',
+      kind: 'explicit',
+    });
+    db.raw.prepare('UPDATE commitments SET created_at=? WHERE id=?').run('2026-07-09T10:00:00.000Z', explicit.id);
+    const inferred = insertCommitmentAt(db, {
+      description: 'inferred, same timing',
+      dueAt: '2026-07-09T11:00:00.000Z',
+      createdAt: '2026-07-09T10:00:00.000Z',
+    });
+    const eligible = eligibleCommitments(db, now, { minAgeMin: 30, maxPerDay: 3 });
+    expect(eligible.map((c) => c.id)).toEqual([inferred.id]);
+  });
+
   it('excludes commitments younger than minAgeMin (echo-back guard)', () => {
     const db = new Db(':memory:');
     const now = '2026-07-09T12:00:00.000Z';

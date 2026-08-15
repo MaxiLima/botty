@@ -47,6 +47,20 @@ section below).
   5820/5821 instance (origin guard, allowlist, funnel+dedup, tick, pagination,
   TUI boot, cross-client chat via puppeteer, sim panel). Deliberately deferred:
   LICENSE choice and lint/formatter (Biome) adoption — both owner decisions.
+- ~~Exact-time reminders~~ **shipped 2026-08-15**: "remind me in 2 minutes" now works —
+  chat used to refuse (day-granular task dueDate was the only knob the model had).
+  New `set_reminder` chat tool inserts a `kind: 'explicit'` commitment (migration 007
+  adds `commitments.kind`, default `'inferred'`); a new reminder scheduler
+  (`loop/reminders.ts`, 15s poll started with the loop) delivers it exactly at
+  `due_at` — no judgment LLM call, no min-age/max-per-day, no working/quiet-hours
+  gate (deliberate: an explicit ask fires at the asked moment). Inferred commitments
+  keep riding tick judgment unchanged (`eligibleCommitments` now filters
+  `kind='inferred'`); same-turn dedup threads set_reminder summaries through
+  `capturedTaskDescriptions`; chat system prompt now states minute-level reminders
+  ARE supported. WS `notification` kind `'reminder'`, `proactive_log` surface_kind
+  `'reminder'`. Verified e2e on isolated 5820 (30s reminder delivered in 10s).
+  Follow-up seams: list/cancel pending reminders from chat + web ("what reminders do
+  I have?"), recurring reminders, and surfacing them in the web UI.
 - ~~macOS quick-capture popup~~ **shipped 2026-08-15**: `packages/quickcapture` — a
   zero-dependency Swift AppKit menu-bar app (`npm run setup -w @botty/quickcapture` →
   `~/.botty/BottyQuick.app`, ad-hoc signed) with a Spotlight-style floating panel

@@ -210,6 +210,15 @@ export const CommitmentStatusSchema = z.enum(['open', 'delivered', 'expired', 'd
 export type CommitmentStatus = z.infer<typeof CommitmentStatusSchema>;
 
 /**
+ * 'inferred' — extracted from conversation by the hidden post-turn pass; delivered
+ * through tick judgment with min-age/max-per-day anti-nag gates.
+ * 'explicit' — the user asked for it (set_reminder chat tool); delivered exactly at
+ * dueAt by the reminder scheduler (loop/reminders.ts), bypassing judgment and gates.
+ */
+export const CommitmentKindSchema = z.enum(['inferred', 'explicit']);
+export type CommitmentKind = z.infer<typeof CommitmentKindSchema>;
+
+/**
  * A short-lived follow-up inferred from chat ("my interview is tomorrow at 3") —
  * operational state, NOT a task and NOT durable memory. See chat/commitments.ts
  * (extraction) and loop/commitments.ts (tick delivery).
@@ -222,6 +231,7 @@ export const CommitmentSchema = z.object({
   createdAt: z.string(),
   status: CommitmentStatusSchema,
   deliveredAt: z.string().nullable(),
+  kind: CommitmentKindSchema,
 });
 export type Commitment = z.infer<typeof CommitmentSchema>;
 

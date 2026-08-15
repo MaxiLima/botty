@@ -154,6 +154,7 @@ directly.
 |---|---|
 | `capture_task` | Create a tracked task from the conversation (source `chat`, `source_ref` a fresh `chat:<nanoid>` so dedup never applies). Mirrors the funnel's requester resolution: a known name → that person, a new name → `upsertDiscoveredPerson`. |
 | `task_action` | Act on an existing task by id: `done`\|`snooze`\|`dismiss`\|`reopen`\|`priority` — mirrors the switch in `POST /api/tasks/:id/action` (`changedBy: 'chat'`). `snoozeUntil` (exact wall-clock instant, ISO with offset) takes precedence over `snoozeDays` for "until tomorrow 9am"-style requests. |
+| `set_reminder` | Exact-time reminder ("remind me in 2 minutes / at 4pm"): inserts a `kind: 'explicit'` commitment delivered precisely at `dueAt` by the reminder scheduler (`loop/reminders.ts`) — no judgment, no anti-nag gates. `dueAt` is ISO with offset and must be in the future. For durable work items the model uses `capture_task` instead. |
 | `memory_search` | Full-text search over tasks/decisions/interactions/chat via `Memory.search` — recall past work or find a task id. |
 | `session_search` | Recall past chat conversations: `mode: 'search'` (FTS over old turns), `'recent'` (list sessions + summaries), `'browse'` (page through one session's turns by offset/limit). |
 

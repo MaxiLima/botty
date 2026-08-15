@@ -9,7 +9,8 @@ DB at `${BOTTY_DATA_DIR:-~/.botty}/data/botty.db`. `better-sqlite3`, `journal_mo
 (version INTEGER PRIMARY KEY, applied_at TEXT)`. The Db class in `@botty/agent` runs pending
 migrations on open. Migration files are plain SQL, one statement set per file. Current set:
 001 (tables below), 002 (FTS5 index), 003 (FTS rebuild with `kind`/`ref_id` UNINDEXED),
-004 (`commitments` table), 005 (`pending_actions` table), 006 (`tasks.owner` column).
+004 (`commitments` table), 005 (`pending_actions` table), 006 (`tasks.owner` column),
+007 (`commitments.kind` column — inferred vs explicit reminders).
 
 ## Tables (migration 001)
 
@@ -188,17 +189,18 @@ CREATE TABLE settings (
 );
 ```
 
-## Commitments, pending actions, task owner (migrations 004–006)
+## Commitments, pending actions, task owner (migrations 004–007)
 
 ```sql
-CREATE TABLE commitments (                         -- inferred short-lived follow-ups (chat)
+CREATE TABLE commitments (                         -- short-lived follow-ups / reminders (chat)
   id TEXT PRIMARY KEY,
   description TEXT NOT NULL,
   due_at TEXT NOT NULL,
   source_turn_id TEXT,                              -- FK-ish to chat_turns.id, unenforced
   created_at TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',              -- open|delivered|expired|dismissed
-  delivered_at TEXT
+  delivered_at TEXT,
+  kind TEXT NOT NULL DEFAULT 'inferred'             -- inferred|explicit (migration 007)
 );
 CREATE INDEX idx_commitments_status_due ON commitments(status, due_at);
 
@@ -219,10 +221,12 @@ CREATE INDEX idx_pending_actions_status_created ON pending_actions(status, creat
 ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'me';
 ```
 
-`commitments` (migration 004) is short-lived, chat-inferred operational state — NOT a task, NOT
-durable memory. `chat/commitments.ts` extracts it from a chat turn; `loop/commitments.ts` delivers
-it through the tick judgment when due and expires it 24h past `due_at` if never delivered. See
-`specs/loop.md`.
+`commitments` (migration 004) is short-lived operational state — NOT a task, NOT durable memory.
+Two kinds (migration 007, `kind` column): `'inferred'` rows are extracted from chat turns by
+`chat/commitments.ts` and delivered through tick judgment when due; `'explicit'` rows come from
+the `set_reminder` chat tool ("remind me in 2 minutes") and are delivered exactly at `due_at` by
+the reminder scheduler (`loop/reminders.ts`), bypassing judgment and its gates. Both kinds expire
+24h past `due_at` if never delivered. See `specs/loop.md`.
 
 `pending_actions` (migration 005) is the approval queue for `mode: action` external MCP tools
 (mcp.json). The chat model can only enqueue a row here; `mcp/pending.ts` is the sole path that

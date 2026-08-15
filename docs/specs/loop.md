@@ -243,6 +243,31 @@ same turn queue as `summarizeSession` so it never blocks the response stream:
 **Guardrails** — `## Behavior` keys in HEARTBEAT.md, defaults in `HEARTBEAT_DEFAULTS`:
 `commitment_min_age_min` (default 30) and `commitments_max_per_day` (default 3).
 
+## Explicit reminders (kind='explicit', migration 007)
+
+Location: `packages/agent/src/loop/reminders.ts`; created only by the `set_reminder` chat tool
+("remind me in 2 minutes / at 4pm" — see `specs/ingestion.md` chat-tools table). Same
+`commitments` table, but a different delivery philosophy: an inferred commitment is botty's
+*guess*, so it earns its nudge through judgment behind anti-nag gates; an explicit reminder is a
+direct user command for a precise moment, so it fires exactly then.
+
+- `createReminderScheduler` (started/stopped with the loop in `loop/index.ts`) polls the local DB
+  every `REMINDER_SCAN_INTERVAL_MS` (15s) plus once at boot, delivering every open, due,
+  `kind='explicit'` commitment: `proactive_log` row (`surface_kind: 'reminder'`, `trigger:
+  'reminder'`, no score), WS `notification` (`kind: 'reminder'`), macOS banner, then
+  `markCommitmentDelivered`.
+- **No judgment LLM call, no `commitment_min_age_min` / `commitments_max_per_day`, and no
+  working-/quiet-hours gate** — deliberately: "remind me in 2 minutes at 11pm" should fire at
+  11:02pm. Explicit deliveries do NOT consume the inferred commitments' `maxPerDay` budget
+  (`eligibleCommitments` filters `kind='inferred'`, and the budget counter only sees judgment
+  deliveries).
+- Reminders that come due while the agent is down deliver (late) on the boot scan; anything more
+  than `COMMITMENT_STALE_GRACE_HOURS` (24h) overdue is expired by the tick's existing stale sweep
+  like any other commitment, so a stale "in 2 minutes" never fires days later.
+- The post-turn inferred-extraction pass dedups against `set_reminder` calls made in the same
+  turn (threaded through `capturedTaskDescriptions`), so one "remind me…" message never produces
+  both an explicit and an inferred commitment.
+
 ## Judgment fail-open
 
 `runJudgment` failures no longer abort the tick: the call is retried once, and on a second

@@ -231,7 +231,10 @@ export function createChat(deps: {
           } else if (e.type === 'thinking') {
             bus.broadcast({ type: 'chat.thinking', payload: { turnId, on: e.on } });
           } else if (e.type === 'tool_use') {
-            if (e.name === 'capture_task' && e.summary) input.capturedTaskDescriptions?.push(e.summary);
+            // set_reminder counts too: a fact already tracked explicitly this turn
+            // must not ALSO become an inferred commitment in the post-turn pass.
+            if ((e.name === 'capture_task' || e.name === 'set_reminder') && e.summary)
+              input.capturedTaskDescriptions?.push(e.summary);
             bus.broadcast({ type: 'chat.toolUse', payload: { turnId, name: e.name, summary: e.summary } });
           }
         },

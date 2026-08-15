@@ -135,6 +135,13 @@ Test each link:
 Judgment quality tuning: `npm run replay -w @botty/agent -- --kind judgment --last 20` re-runs
 recorded judgments (optionally with `--system-file` / `--model` overrides) and diffs decisions.
 
+**Exact-time reminders** (`set_reminder` → `loop/reminders.ts`, no timewarp needed — the
+scheduler polls every 15s and ignores all time gates): with the mock LLM, POST a chat message of
+`!tool set_reminder {"description":"ping","dueAt":"<now+30s ISO Z>"}` to the isolated instance;
+within ~45s the `commitments` row (kind `explicit`) flips to `delivered`, a `proactive_log` row
+with `surface_kind: 'reminder'` appears, and the WS `notification` (kind `reminder`) + macOS
+banner fire. With a real LLM just say "recordame en 2 minutos que …" in chat.
+
 ## 3. Anti-nagging — "it must NOT ping me every minute about the same thing"
 
 The nine-gate rules filter runs before any LLM call, and every rejection is logged with its gate

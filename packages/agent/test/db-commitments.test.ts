@@ -14,6 +14,20 @@ describe('Db — commitments', () => {
     db.close();
   });
 
+  it('kind defaults to inferred and round-trips explicit (migration 007)', () => {
+    const db = new Db(':memory:');
+    const inferred = db.insertCommitment({ description: 'a', dueAt: '2026-08-15T15:00:00.000Z' });
+    expect(inferred.kind).toBe('inferred');
+    const explicit = db.insertCommitment({
+      description: 'b',
+      dueAt: '2026-08-15T15:00:00.000Z',
+      kind: 'explicit',
+    });
+    expect(explicit.kind).toBe('explicit');
+    expect(db.getCommitment(explicit.id)?.kind).toBe('explicit');
+    db.close();
+  });
+
   it('insertCommitment persists sourceTurnId when given', () => {
     const db = new Db(':memory:');
     const c = db.insertCommitment({

@@ -32,10 +32,12 @@ export function commitmentCandidateId(c: Pick<Commitment, 'id'>): string {
 }
 
 /**
- * Due commitments eligible for this tick: open, due, past the echo-back min-age
- * guard (a commitment can't notify moments after it was created), capped by the
- * remaining maxPerDay delivery budget. Over-cap commitments simply aren't
+ * Due INFERRED commitments eligible for this tick: open, due, past the echo-back
+ * min-age guard (a commitment can't notify moments after it was created), capped
+ * by the remaining maxPerDay delivery budget. Over-cap commitments simply aren't
  * offered this tick — they stay open and are reconsidered on a later one.
+ * Explicit reminders (kind='explicit', set_reminder tool) never ride judgment —
+ * they're delivered exactly on time by loop/reminders.ts.
  */
 export function eligibleCommitments(
   db: Db,
@@ -45,6 +47,7 @@ export function eligibleCommitments(
   const nowMs = Date.parse(now);
   const due = db
     .dueCommitments(now)
+    .filter((c) => c.kind === 'inferred')
     .filter((c) => nowMs - Date.parse(c.createdAt) >= opts.minAgeMin * 60_000);
   const deliveredToday = db.countCommitmentDeliveriesSince(new Date(nowMs - 24 * 3_600_000).toISOString());
   const remaining = Math.max(0, opts.maxPerDay - deliveredToday);

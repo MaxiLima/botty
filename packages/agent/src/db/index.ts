@@ -109,6 +109,8 @@ export interface NewCommitment {
   /** ISO datetime the commitment is due. */
   dueAt: string;
   sourceTurnId?: string | null;
+  /** Default 'inferred' (the hidden extraction pass); 'explicit' = set_reminder tool. */
+  kind?: 'inferred' | 'explicit';
 }
 
 export interface NewPendingAction {
@@ -758,10 +760,10 @@ export class Db {
     const now = nowIso();
     this.raw
       .prepare(
-        `INSERT INTO commitments (id, description, due_at, source_turn_id, created_at, status)
-         VALUES (?, ?, ?, ?, ?, 'open')`,
+        `INSERT INTO commitments (id, description, due_at, source_turn_id, created_at, status, kind)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`,
       )
-      .run(id, input.description, input.dueAt, input.sourceTurnId ?? null, now);
+      .run(id, input.description, input.dueAt, input.sourceTurnId ?? null, now, input.kind ?? 'inferred');
     return this.getCommitment(id)!;
   }
 

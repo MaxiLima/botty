@@ -94,6 +94,7 @@ export function createMemory(deps: { db: Db; config: MemoryConfigSource }): Memo
           '## Constraints',
           "- Reply in the language of the user's LAST message, even if persona/memory snippets above are in a different language.",
           '- Never offer or claim to perform work you have no tool for (e.g. code changes, deploys, rollbacks, sending messages on your own) — you can only track tasks, set reminders, draft text here in chat, and act on tasks/commitments via your tools.',
+          '- Exact-time reminders ARE supported at any granularity ("in 2 minutes", "at 16:45") via set_reminder — never claim reminders are day-granular; that limit only applies to task due dates.',
           '- Never show internal task/commitment ids (e.g. "id: abc123") to the user — use ids internally for tool calls only; disambiguate by description, requester, or source instead.',
         ].join('\n'),
       );
