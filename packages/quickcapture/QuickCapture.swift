@@ -86,12 +86,13 @@ final class CapturePanel: NSPanel {
 }
 
 final class PanelController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
-  static let width: CGFloat = 640
-  static let height: CGFloat = 64
+  static let width: CGFloat = 720
+  static let height: CGFloat = 76
 
   let panel: CapturePanel
   let field = NSTextField()
   let hint = NSTextField(labelWithString: "")
+  let sendButton = NSButton()
   private var generation = 0  // invalidates stale auto-hide timers
 
   override init() {
@@ -116,39 +117,64 @@ final class PanelController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     effect.blendingMode = .behindWindow
     effect.state = .active
     effect.wantsLayer = true
-    effect.layer?.cornerRadius = 16
+    effect.layer?.cornerRadius = 18
     effect.layer?.masksToBounds = true
     effect.layer?.borderWidth = 1
-    effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+    effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
     panel.contentView = effect
 
-    let icon = NSImageView(frame: NSRect(x: 20, y: (Self.height - 24) / 2, width: 24, height: 24))
+    // Deepen the HUD blur toward the near-opaque dark of the Claude popup.
+    let tint = NSView(frame: effect.bounds)
+    tint.autoresizingMask = [.width, .height]
+    tint.wantsLayer = true
+    tint.layer?.backgroundColor = NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 0.55).cgColor
+    effect.addSubview(tint)
+
+    let icon = NSImageView(frame: NSRect(x: 24, y: (Self.height - 28) / 2, width: 28, height: 28))
     icon.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "botty")
-    icon.symbolConfiguration = .init(pointSize: 20, weight: .medium)
+    icon.symbolConfiguration = .init(pointSize: 24, weight: .medium)
     icon.contentTintColor = NSColor.systemOrange
     effect.addSubview(icon)
 
-    field.frame = NSRect(x: 56, y: (Self.height - 26) / 2, width: Self.width - 56 - 120, height: 26)
-    field.font = .systemFont(ofSize: 18)
+    field.frame = NSRect(x: 66, y: (Self.height - 30) / 2, width: Self.width - 66 - 210, height: 30)
+    field.font = .systemFont(ofSize: 20)
     field.isBordered = false
     field.drawsBackground = false
     field.focusRingType = .none
     field.textColor = .white
-    field.placeholderString = "Tell botty — note, reminder, question…"
+    field.placeholderAttributedString = NSAttributedString(
+      string: "Tell botty — note, reminder, question…",
+      attributes: [.foregroundColor: NSColor.white.withAlphaComponent(0.32),
+                   .font: NSFont.systemFont(ofSize: 20)])
     field.delegate = self
     effect.addSubview(field)
 
-    hint.frame = NSRect(x: Self.width - 116, y: (Self.height - 16) / 2, width: 100, height: 16)
+    hint.frame = NSRect(x: Self.width - 208, y: (Self.height - 16) / 2, width: 130, height: 16)
     hint.alignment = .right
     hint.font = .systemFont(ofSize: 11)
-    hint.textColor = NSColor.white.withAlphaComponent(0.4)
+    hint.textColor = NSColor.white.withAlphaComponent(0.35)
     effect.addSubview(hint)
+
+    let buttonSize: CGFloat = 40
+    sendButton.frame = NSRect(x: Self.width - buttonSize - 18,
+                              y: (Self.height - buttonSize) / 2,
+                              width: buttonSize, height: buttonSize)
+    sendButton.isBordered = false
+    sendButton.wantsLayer = true
+    sendButton.layer?.backgroundColor = NSColor.systemOrange.cgColor
+    sendButton.layer?.cornerRadius = 10
+    sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "send")
+    sendButton.symbolConfiguration = .init(pointSize: 17, weight: .semibold)
+    sendButton.contentTintColor = .white
+    sendButton.target = self
+    sendButton.action = #selector(submit)
+    effect.addSubview(sendButton)
     resetHint()
   }
 
   private func resetHint() {
-    hint.stringValue = "↩ send · esc"
-    hint.textColor = NSColor.white.withAlphaComponent(0.4)
+    hint.stringValue = "↩ · esc"
+    hint.textColor = NSColor.white.withAlphaComponent(0.35)
   }
 
   func toggle() { panel.isVisible ? hide() : show() }
@@ -166,6 +192,9 @@ final class PanelController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     }
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(field)
+    if let editor = panel.fieldEditor(true, for: field) as? NSTextView {
+      editor.insertionPointColor = .systemOrange
+    }
   }
 
   func hide() {
@@ -187,7 +216,7 @@ final class PanelController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     }
   }
 
-  private func submit() {
+  @objc private func submit() {
     let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { hide(); return }
     generation += 1
