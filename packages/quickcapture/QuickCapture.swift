@@ -186,9 +186,9 @@ final class PanelController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     let mouse = NSEvent.mouseLocation
     let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
       ?? NSScreen.main
-    if let f = screen?.frame {
-      panel.setFrameOrigin(NSPoint(x: f.midX - Self.width / 2,
-                                   y: f.minY + f.height * 0.62))
+    if let vf = screen?.visibleFrame {  // excludes Dock/menu bar
+      panel.setFrameOrigin(NSPoint(x: vf.midX - Self.width / 2,
+                                   y: vf.minY + vf.height * 0.10))
     }
     panel.makeKeyAndOrderFront(nil)
     panel.makeFirstResponder(field)
