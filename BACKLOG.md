@@ -47,6 +47,24 @@ section below).
   5820/5821 instance (origin guard, allowlist, funnel+dedup, tick, pagination,
   TUI boot, cross-client chat via puppeteer, sim panel). Deliberately deferred:
   LICENSE choice and lint/formatter (Biome) adoption — both owner decisions.
+- ~~macOS quick-capture popup~~ **shipped 2026-08-15**: `packages/quickcapture` — a
+  zero-dependency Swift AppKit menu-bar app (`npm run setup -w @botty/quickcapture` →
+  `~/.botty/BottyQuick.app`, ad-hoc signed) with a Spotlight-style floating panel
+  (nonactivating `NSPanel`, HUD material, all-Spaces). Hotkeys: ⌥Space via Carbon
+  (no permissions) + double-tap ⌥ à la Claude desktop via global `flagsChanged`
+  monitor (Accessibility grant offered from the menu, polled so no relaunch needed).
+  Submits to the existing chat ingress `POST /api/chat/message` — no agent changes;
+  the chat model routes to `capture_task` / the commitment pass as usual. Send
+  failure keeps the text and shows "botty offline"; `--send`/`--url`/`--show` flags
+  for headless testing (verified e2e on isolated 5820). Follow-up seams: custom
+  hotkey config, showing botty's streamed reply in the panel, voice capture
+  (botito-spec §13 had on-device Speech), and a `botty quick` CLI alias.
+- **Accepted npm advisories (aged lockfile)**, noted 2026-08-15: the
+  `--before 2026-07-08` lockfile resolution (commit 3068749) leaves `npm audit` at
+  6 findings (4 high: fast-uri backslash host confusion, ip-address SSRF-adjacent
+  misclassifications via transitive deps; hono/@hono/node-server pinned by
+  overrides). None are in a network-exposed path beyond the loopback-only server;
+  revisit when the mirror quarantine ages past the fixed versions.
 - ~~Manual-testing sandbox~~ **shipped 2026-07-14**: `npm run sandbox` — persistent
   playground on **6820/6821** (`~/.botty-sandbox`, `BOTTY_SANDBOX_DIR` override) for
   day-to-day-style TUI testing with time compressed. Zero `packages/*` source changes:

@@ -157,6 +157,25 @@ Keys: **Enter** send · **Esc** interrupt a streaming reply (or clear the draft)
 read-only — editing config and acting on tasks stay in the web app — and image
 attachments aren't supported in the terminal.
 
+## Quick capture (macOS)
+
+A Spotlight-style floating panel for firing off quick notes and reminders
+("remind me to write to Ana about the renewal") from anywhere — whatever you
+type is sent to botty chat, where the model turns it into a tracked task or a
+timed reminder:
+
+```sh
+npm run setup -w @botty/quickcapture   # builds + installs ~/.botty/BottyQuick.app and launches it
+```
+
+Hotkeys: **⌥Space** works immediately; **double-tap ⌥** (like the Claude
+desktop popup) needs Accessibility permission — menu-bar ✳ icon → "Enable
+double-⌥ hotkey…" (re-grant after reinstalling; the ad-hoc signature changes
+per build). **Enter** sends · **Esc** / click-away dismisses · on send failure
+the text is kept and the panel shows *botty offline*. "Start at Login"
+lives in the same menu. Point it elsewhere with `BOTTY_URL` (see
+`packages/quickcapture/QuickCapture.swift` for `--url`/`--send`/`--show` flags).
+
 Config lives in `~/.botty/config/`: `persona.md`, `team.md`, `heartbeat.md`, and `mcp.json`
 (external MCP servers/tools + the consent gate — `docs/specs/mcp.md`) — editable in the app's
 Config page (mcp.json is edited on disk), hot-reloaded. MCP servers you already run in Claude
@@ -178,4 +197,5 @@ recipes — notification troubleshooting is in §1) · `BACKLOG.md` (prioritized
 - `packages/tui` — Ink terminal chat client (`npm run dev:tui`, or the `botty-tui` bin)
 - `packages/cli` — the `botty` bin: daemon lifecycle + client launchers (`docs/specs/cli.md`)
 - `packages/sim` — source simulator + scenario engine (`scenarios/workweek.json`)
+- `packages/quickcapture` — macOS global quick-capture panel (⌥⌥ / ⌥Space → botty chat)
 - `docs/` — spec suite (`SPEC.md` + `docs/specs/*`); predecessor spec in `botito-spec.md`
