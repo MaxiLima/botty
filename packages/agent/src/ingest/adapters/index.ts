@@ -30,12 +30,10 @@ export interface SourceAdapter {
 
 export type AdapterMap = Record<SourceId, SourceAdapter>;
 
-/** Per-source explanation for real drivers that still need user-supplied credentials. */
-const REAL_STUB_REASONS: Partial<Record<SourceId, string>> = {
-  slack: 'needs a Slack MCP server + bot token configured (no claude.ai Slack connector exists)',
-  jira: 'needs a Jira API token configured',
-  github: 'needs a GitHub token configured',
-};
+/** Per-source explanation for real drivers still lacking a connector-backed driver.
+ * Empty now that slack/gmail/gcal/jira/github all poll through claude.ai connectors;
+ * the stub stays as a defensive fallback for any future source. */
+const REAL_STUB_REASONS: Partial<Record<SourceId, string>> = {};
 
 /** Sources without a credential-free real driver fail loudly per check. */
 function createRealAdapterStub(source: SourceId): SourceAdapter {
@@ -72,13 +70,26 @@ async function loadRealAdapters(
         throw new Error(`real ${source} driver unavailable: ${why}`);
       },
     });
-    return { gmail: failing('gmail'), gcal: failing('gcal') };
+    return Object.fromEntries(SOURCES.map((s) => [s, failing(s)])) as Partial<
+      Record<SourceId, SourceAdapter>
+    >;
   }
   // Lazy imports keep the Agent SDK (and its cost) out of sim/mock runs.
-  const [{ createConnectorFetch }, { createGmailAdapter }, { createGcalAdapter }, llm] = await Promise.all([
+  const [
+    { createConnectorFetch },
+    { createGmailAdapter },
+    { createGcalAdapter },
+    { createSlackAdapter },
+    { createJiraAdapter },
+    { createGithubAdapter },
+    llm,
+  ] = await Promise.all([
     import('./real/connector.js'),
     import('./real/gmail.js'),
     import('./real/gcal.js'),
+    import('./real/slack.js'),
+    import('./real/jira.js'),
+    import('./real/github.js'),
     import('../../llm/index.js'),
   ]);
   const fetchViaConnector = createConnectorFetch({
@@ -87,16 +98,19 @@ async function loadRealAdapters(
     record: llm.makeDecisionRecorder(deps.db, deps.bus),
   });
   return {
+    slack: createSlackAdapter(fetchViaConnector),
     gmail: createGmailAdapter(fetchViaConnector),
     gcal: createGcalAdapter(fetchViaConnector),
+    jira: createJiraAdapter(fetchViaConnector),
+    github: createGithubAdapter(fetchViaConnector),
   };
 }
 
 /**
- * One adapter per source, family selected by BOTTY_MODE. Real mode: gmail/gcal
- * poll through the user's claude.ai MCP connectors (docs/specs/ingestion.md);
- * slack/jira/github stay credential-gated stubs. The connector family loads
- * lazily on first fetch so startup never blocks on the Agent SDK import.
+ * One adapter per source, family selected by BOTTY_MODE. Real mode: every source
+ * (slack/gmail/gcal/jira/github) polls through the user's claude.ai MCP connectors
+ * (docs/specs/ingestion.md). The connector family loads lazily on first fetch so
+ * startup never blocks on the Agent SDK import.
  */
 export function createAdapters(
   env: Pick<AgentEnv, 'mode' | 'simUrl' | 'mockLlm'>,

@@ -238,10 +238,10 @@ describe('sim adapter fetchHistory (backfill)', () => {
     }
   });
 
-  it('credential-gated real adapter throws a helpful history error', async () => {
+  it('real adapter without a history driver throws a clear backfill error', async () => {
     const adapters = createAdapters({ mode: 'real', simUrl: 'http://localhost:0', mockLlm: false });
     await expect(
       adapters.slack.fetchHistory!({ cursor: null, oldest: '2026-01-01T00:00:00.000Z', limit: 10 }),
-    ).rejects.toThrow(/real slack history driver needs a Slack MCP server/);
+    ).rejects.toThrow(/real slack driver does not support backfill yet/);
   });
 });
