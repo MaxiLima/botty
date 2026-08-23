@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CONFIG_FILE_NAMES, type ConfigFileName } from '@botty/shared';
-import { api } from '../lib/api.js';
+import { api, type ConfigIssue } from '../lib/api.js';
 import { shortDateTime } from '../lib/format.js';
 import { navigate } from '../lib/router.js';
 import { useOnReconnect, useWsEvent } from '../lib/ws.js';
@@ -19,6 +19,14 @@ interface EditorState {
   warnings: string[];
   saving: boolean;
   error: string | null;
+  /**
+   * Non-null when the content this editor is showing is NOT what the agent is
+   * running — the on-disk (or just-saved) file failed to parse cleanly, so
+   * the agent kept serving the last-known-good version underneath. Only
+   * heartbeat.md has a last-known-good fallback (config/index.ts); persona
+   * and team always take effect as saved, so this stays null for them.
+   */
+  issues: ConfigIssue | null;
 }
 
 type AllState = Record<ConfigFileName, EditorState>;
@@ -30,6 +38,7 @@ const empty = (): EditorState => ({
   warnings: [],
   saving: false,
   error: null,
+  issues: null,
 });
 
 export function ConfigPage() {
@@ -42,7 +51,7 @@ export function ConfigPage() {
   const refetch = useCallback(async (only?: ConfigFileName) => {
     try {
       setPageError(null);
-      const { files } = await api.config();
+      const { files, issues } = await api.config();
       const at = new Date().toISOString();
       setState((prev) => {
         const next = { ...prev };
@@ -56,6 +65,7 @@ export function ConfigPage() {
             // don't clobber unsaved local edits on a hot-reload push
             draft: dirty ? cur.draft : files[name],
             loadedAt: at,
+            issues: (name === 'heartbeat' ? issues.heartbeat : null) ?? null,
           };
         }
         return next;
@@ -71,6 +81,13 @@ export function ConfigPage() {
   useOnReconnect(() => void refetch());
   useWsEvent('config.changed', (p) => {
     const name = p.name as ConfigFileName;
+    // A hot-reload push that carries warnings means the agent rejected that
+    // revision and kept serving the last-known-good one underneath — flag it
+    // immediately (don't wait on the refetch round-trip) so "the page shows
+    // the new text as if it were live" can't happen even for a moment.
+    if (p.warnings && p.warnings.length > 0 && CONFIG_FILE_NAMES.includes(name)) {
+      patch(name as ConfigFileName, { issues: { warnings: p.warnings, since: new Date().toISOString() } });
+    }
     void refetch(CONFIG_FILE_NAMES.includes(name) ? name : undefined);
   });
 
@@ -79,6 +96,10 @@ export function ConfigPage() {
     try {
       const res = await api.saveConfig(name, state[name].draft);
       patch(name, { saving: false, warnings: res.warnings, loaded: state[name].draft, loadedAt: new Date().toISOString() });
+      // A save with warnings never replaces last-known-good either — refetch
+      // to pick up the authoritative `issues` state rather than assuming
+      // `loaded` (this draft) is now what's running.
+      if (res.warnings.length > 0) void refetch(name);
     } catch (err) {
       patch(name, { saving: false, error: err instanceof Error ? err.message : String(err) });
     }
@@ -97,8 +118,15 @@ export function ConfigPage() {
         {CONFIG_FILE_NAMES.map((name) => {
           const s = state[name];
           const dirty = s.draft !== s.loaded;
+          // The editor is showing content the agent is NOT running whenever
+          // there's an unresolved parse issue AND the user hasn't since typed
+          // something different — a fresh edit is the user's own draft, not
+          // the rejected on-disk content, so it doesn't need the "not live"
+          // treatment (saving it will surface its own warnings on the next
+          // refetch if it's still broken).
+          const notLive = s.issues !== null && !dirty;
           return (
-            <section key={name} className={`config-editor ${dirty ? 'dirty' : ''}`}>
+            <section key={name} className={`config-editor ${dirty ? 'dirty' : ''} ${notLive ? 'not-live' : ''}`}>
               <header className="config-head">
                 <div>
                   <h2>{FILE_INFO[name].file}</h2>
@@ -115,6 +143,18 @@ export function ConfigPage() {
                   </button>
                 </div>
               </header>
+              {notLive && s.issues && (
+                <div className="config-not-live-banner" role="alert">
+                  <strong>⚠ Not live.</strong> This file failed to parse — botty is still running the
+                  last-known-good version from before {shortDateTime(s.issues.since)}. The text below is
+                  what&apos;s on disk, not what the agent is using.
+                  <ul className="warning-list">
+                    {s.issues.warnings.map((w, i) => (
+                      <li key={i}>⚠ {w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <textarea
                 className="config-textarea"
                 spellCheck={false}

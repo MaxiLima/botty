@@ -157,6 +157,12 @@ export const AiDecisionSchema = z.object({
   latencyMs: z.number().nullable(),
   inputTokens: z.number().nullable(),
   outputTokens: z.number().nullable(),
+  /** Input tokens served from the prompt cache — NULL on rows recorded before migration 008. */
+  cacheReadInputTokens: z.number().nullable(),
+  /** Input tokens written to the prompt cache this call — NULL on rows recorded before migration 008. */
+  cacheCreationInputTokens: z.number().nullable(),
+  /** SDK-reported authoritative cost for this call, when the provider supplied one — NULL otherwise. */
+  totalCostUsd: z.number().nullable(),
   relatedRef: z.string().nullable(),
   error: z.string().nullable(),
   createdAt: z.string(),
@@ -279,6 +285,11 @@ export const CostTotalsSchema = z.object({
   calls: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
+  /** Input tokens served from the prompt cache — the SDK reports these separately from
+   * (non-overlapping with) inputTokens; priced at their own, much cheaper rate. */
+  cacheReadInputTokens: z.number(),
+  /** Input tokens written to the prompt cache this call — priced above the plain input rate. */
+  cacheCreationInputTokens: z.number(),
   costUsd: z.number(),
   /** Calls whose model has no pricing entry — tokens counted, cost not. */
   unpricedCalls: z.number(),
@@ -321,7 +332,15 @@ export const CostsReportSchema = z.object({
   /** Last 30 UTC days, oldest first. */
   byDay: z.array(CostDayRowSchema),
   /** Effective USD/MTok rates the report was priced with. */
-  pricing: z.record(z.string(), z.object({ inputPerMTok: z.number(), outputPerMTok: z.number() })),
+  pricing: z.record(
+    z.string(),
+    z.object({
+      inputPerMTok: z.number(),
+      outputPerMTok: z.number(),
+      cacheReadPerMTok: z.number(),
+      cacheCreationPerMTok: z.number(),
+    }),
+  ),
 });
 export type CostsReport = z.infer<typeof CostsReportSchema>;
 

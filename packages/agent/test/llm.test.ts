@@ -3,10 +3,11 @@ import { z } from 'zod';
 import { ClassifierOutputSchema, ExtractorOutputSchema, JudgmentOutputSchema } from '@botty/shared';
 import { Db } from '../src/db/index.js';
 import { createBus } from '../src/bus/index.js';
-import { createLlm, LlmParseError, makeModelResolver } from '../src/llm/index.js';
-import { SdkLlmClient, type QueryFn, type SdkMessageLike } from '../src/llm/sdk.js';
+import { createLlm, LlmParseError, makeModelResolver, PartialChatTurnError } from '../src/llm/index.js';
+import { dedupeToolNames, SdkLlmClient, type QueryFn, type SdkMessageLike } from '../src/llm/sdk.js';
 import { makeDecisionRecorder } from '../src/llm/index.js';
 import { MockLlmClient } from '../src/llm/mock.js';
+import type { ChatToolSpec } from '../src/llm/types.js';
 
 const OutSchema = z.object({ answer: z.string(), score: z.number() });
 
@@ -114,6 +115,34 @@ describe('SdkLlmClient.structured', () => {
     await client.structured({ task: 'classification', system: 's', prompt: 'p', schema: OutSchema });
     expect(calls[1]!.options.model).toBe('claude-opus-4-8');
   });
+
+  it('records cache read/creation tokens and total_cost_usd from the result message (H12)', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const queryFn: QueryFn = () => ({
+      async *[Symbol.asyncIterator](): AsyncGenerator<SdkMessageLike> {
+        yield { type: 'system', subtype: 'init', session_id: 'prov-struct' };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '{"answer":"ok","score":1}',
+          usage: { input_tokens: 6, output_tokens: 3, cache_read_input_tokens: 9_500, cache_creation_input_tokens: 200 },
+          total_cost_usd: 0.0009,
+        };
+      },
+    });
+    const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+    const out = await client.structured({ task: 'judgment', system: 's', prompt: 'p', schema: OutSchema });
+    expect(out).toEqual({ answer: 'ok', score: 1 });
+
+    const row = db.listAiDecisions({ kind: 'judgment' })[0]!;
+    expect(row.inputTokens).toBe(6);
+    expect(row.outputTokens).toBe(3);
+    expect(row.cacheReadInputTokens).toBe(9_500);
+    expect(row.cacheCreationInputTokens).toBe(200);
+    expect(row.totalCostUsd).toBeCloseTo(0.0009);
+  });
 });
 
 describe('SdkLlmClient.structured — error accounting', () => {
@@ -217,6 +246,41 @@ describe('SdkLlmClient.chatTurn', () => {
     expect(calls).toBe(2);
   });
 
+  it('records cache read/creation tokens and total_cost_usd from the result message (H12)', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const queryFn: QueryFn = () => ({
+      async *[Symbol.asyncIterator](): AsyncGenerator<SdkMessageLike> {
+        yield { type: 'system', subtype: 'init', session_id: 'prov-cache' };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'prov-cache',
+          is_error: false,
+          result: 'resumed reply',
+          usage: { input_tokens: 4, output_tokens: 12, cache_read_input_tokens: 8_000, cache_creation_input_tokens: 500 },
+          total_cost_usd: 0.0031,
+        };
+      },
+    });
+    const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+    const session = db.createSession();
+    const res = await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', onEvent: () => {} });
+
+    expect(res.usage).toEqual({
+      inputTokens: 4,
+      outputTokens: 12,
+      cacheReadInputTokens: 8_000,
+      cacheCreationInputTokens: 500,
+      totalCostUsd: 0.0031,
+    });
+    const row = db.listAiDecisions({ kind: 'chat_turn' })[0]!;
+    expect(row.inputTokens).toBe(4);
+    expect(row.cacheReadInputTokens).toBe(8_000);
+    expect(row.cacheCreationInputTokens).toBe(500);
+    expect(row.totalCostUsd).toBeCloseTo(0.0031);
+  });
+
   it('never retries after partial output has streamed (would duplicate text in the turn)', async () => {
     const db = new Db(':memory:');
     const bus = createBus();
@@ -241,6 +305,203 @@ describe('SdkLlmClient.chatTurn', () => {
       client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', onEvent: () => {} }),
     ).rejects.toThrow('mid-stream death');
     expect(calls).toBe(1);
+  });
+
+  it('a mid-stream crash after partial text throws PartialChatTurnError carrying that text (not a plain Error)', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const queryFn: QueryFn = () => ({
+      async *[Symbol.asyncIterator](): AsyncGenerator<SdkMessageLike> {
+        yield { type: 'system', subtype: 'init', session_id: 'prov-partial' };
+        yield {
+          type: 'stream_event',
+          session_id: 'prov-partial',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Here is the sta' } },
+        };
+        throw new Error('subprocess crashed');
+      },
+    });
+    const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+    const session = db.createSession();
+    let caught: unknown;
+    try {
+      await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', onEvent: () => {} });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PartialChatTurnError);
+    const err = caught as PartialChatTurnError;
+    expect(err.message).toBe('subprocess crashed');
+    expect(err.partialText).toBe('Here is the sta');
+  });
+
+  it('error_max_turns after partial text also throws PartialChatTurnError, not a bare discard', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const queryFn: QueryFn = () => {
+      const messages: SdkMessageLike[] = [
+        { type: 'system', subtype: 'init', session_id: 'prov-mt' },
+        {
+          type: 'stream_event',
+          session_id: 'prov-mt',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial answer' } },
+        },
+        {
+          type: 'result',
+          subtype: 'error_max_turns',
+          session_id: 'prov-mt',
+          is_error: true,
+          errors: ['max turns reached'],
+          usage: { input_tokens: 5, output_tokens: 5 },
+        },
+      ];
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield* messages;
+        },
+      };
+    };
+    const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+    const session = db.createSession();
+    let caught: unknown;
+    try {
+      await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', onEvent: () => {} });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PartialChatTurnError);
+    expect((caught as PartialChatTurnError).partialText).toBe('partial answer');
+    // Session id from an is_error result is still persisted (not thrown mid-stream) —
+    // the next resumed turn should continue the SAME provider session, since the
+    // partial reply is about to be saved into local history right alongside it.
+    expect(db.getProviderSessionId(session.id)).toBe('prov-mt');
+  });
+
+  it('an error with no streamed text throws a plain Error, not PartialChatTurnError', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const queryFn: QueryFn = () => ({
+      async *[Symbol.asyncIterator](): AsyncGenerator<SdkMessageLike> {
+        yield { type: 'system', subtype: 'init', session_id: 'prov-empty' };
+        yield {
+          type: 'result',
+          subtype: 'error',
+          session_id: 'prov-empty',
+          is_error: true,
+          errors: ['no text ever streamed'],
+        };
+      },
+    });
+    const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+    const session = db.createSession();
+    let caught: unknown;
+    try {
+      await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', onEvent: () => {} });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).not.toBeInstanceOf(PartialChatTurnError);
+    expect(caught).toBeInstanceOf(Error);
+  });
+
+  it('strips ANTHROPIC_API_KEY/CLAUDECODE* from the SDK env on both chat and structured calls', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    const prevClaudeCode = process.env.CLAUDECODE;
+    process.env.ANTHROPIC_API_KEY = 'sk-test-leaked';
+    process.env.CLAUDECODE = '1';
+    process.env.SOME_HARMLESS_VAR = 'kept';
+    try {
+      const calls: { options: Record<string, unknown> }[] = [];
+      const queryFn: QueryFn = ({ options }) => {
+        calls.push({ options: options ?? {} });
+        const messages: SdkMessageLike[] = [
+          { type: 'result', subtype: 'success', is_error: false, result: '{"answer":"x","score":0}', session_id: 'prov-env' },
+        ];
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield* messages;
+          },
+        };
+      };
+      const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+      const session = db.createSession();
+      await client.chatTurn({ sessionKey: session.id, prompt: 'hi', systemPrompt: 'sys', onEvent: () => {} });
+      const chatEnv = calls[0]!.options.env as Record<string, string>;
+      expect(chatEnv.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(chatEnv.CLAUDECODE).toBeUndefined();
+      expect(chatEnv.SOME_HARMLESS_VAR).toBe('kept');
+
+      calls.length = 0;
+      await client.structured({ task: 'judgment', system: 's', prompt: 'p', schema: OutSchema });
+      const structuredEnv = calls[0]!.options.env as Record<string, string>;
+      expect(structuredEnv.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(structuredEnv.CLAUDECODE).toBeUndefined();
+      expect(structuredEnv.SOME_HARMLESS_VAR).toBe('kept');
+    } finally {
+      if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prevKey;
+      if (prevClaudeCode === undefined) delete process.env.CLAUDECODE;
+      else process.env.CLAUDECODE = prevClaudeCode;
+      delete process.env.SOME_HARMLESS_VAR;
+    }
+  });
+
+  it('structured() runs with includePartialMessages so a long call has activity to reset the inactivity watchdog', async () => {
+    const db = new Db(':memory:');
+    const bus = createBus();
+    const calls: { options: Record<string, unknown> }[] = [];
+    const queryFn: QueryFn = ({ options }) => {
+      calls.push({ options: options ?? {} });
+      const messages: SdkMessageLike[] = [
+        { type: 'result', subtype: 'success', is_error: false, result: '{"answer":"x","score":0}' },
+      ];
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield* messages;
+        },
+      };
+    };
+    const client = new SdkLlmClient({ queryFn, db, modelFor: makeModelResolver(db), record: makeDecisionRecorder(db, bus) });
+    await client.structured({ task: 'judgment', system: 's', prompt: 'p', schema: OutSchema });
+    expect(calls[0]!.options.includePartialMessages).toBe(true);
+  });
+});
+
+describe('dedupeToolNames', () => {
+  function stubTool(name: string): ChatToolSpec {
+    return {
+      name,
+      description: name,
+      inputSchema: {},
+      summarize: () => name,
+      execute: async () => ({}),
+    };
+  }
+
+  it('leaves unique names untouched', () => {
+    const specs = [stubTool('gcal_list_events'), stubTool('gmail_search')];
+    const out = dedupeToolNames(specs);
+    expect(out.map((s) => s.name)).toEqual(['gcal_list_events', 'gmail_search']);
+  });
+
+  it('gives later collisions a numeric suffix instead of leaving a duplicate name', () => {
+    const specs = [stubTool('gcal_list_events'), stubTool('gcal_list_events'), stubTool('gcal_list_events')];
+    const out = dedupeToolNames(specs);
+    expect(out.map((s) => s.name)).toEqual(['gcal_list_events', 'gcal_list_events_2', 'gcal_list_events_3']);
+    // Every name is unique — this is exactly the property the SDK's tool
+    // factory needs to never throw "Tool X is already registered".
+    expect(new Set(out.map((s) => s.name)).size).toBe(out.length);
+  });
+
+  it('preserves each spec\'s own behavior (execute/summarize) under its renamed identity', async () => {
+    const a = stubTool('dup');
+    const b = { ...stubTool('dup'), execute: async () => ({ from: 'b' }) };
+    const [outA, outB] = dedupeToolNames([a, b]);
+    expect(outA!.name).toBe('dup');
+    expect(outB!.name).toBe('dup_2');
+    await expect(outB!.execute({})).resolves.toEqual({ from: 'b' });
   });
 });
 

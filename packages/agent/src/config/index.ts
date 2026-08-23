@@ -39,7 +39,24 @@ export interface ConfigManager {
   raw(name: ConfigFileName): string;
   /** PERSONA.md content (raw markdown, injected into prompts). */
   persona(): string;
+  /**
+   * Team roster (TEAM.md) in effect. Same last-known-good semantics as
+   * heartbeat()/mcp(): a revision that parses with warnings never replaces a
+   * previously clean roster — a truncated/corrupted write must not silently
+   * demote everyone to tier-2/'departed' via materializePeople(). The single
+   * "TEAM.md defines no people" warning (an intentionally empty file, not a
+   * parse failure) is exempt — see teamIssues()'s doc comment.
+   */
   team(): TeamConfig;
+  /**
+   * Warnings for the current team.md content when it isn't what's being
+   * served (last-known-good in effect), or when a broken file was served with
+   * defaults at boot. Null when the file on disk parsed cleanly (an
+   * intentionally-empty file, which parses with only the "defines no people"
+   * warning, counts as clean here — it's expected on a fresh install, not a
+   * truncation/parse-failure signal).
+   */
+  teamIssues(): ConfigIssues | null;
   /**
    * The heartbeat config in effect. A hot reload (or save) whose content parses
    * with warnings does NOT replace a previously clean config — the last-known-good
@@ -92,6 +109,10 @@ export function createConfig(env: AgentEnv, db: Db, bus: Bus): ConfigManager {
   const mcpFilePath = path.join(env.configDir, MCP_FILE_NAME);
   const contents = new Map<ConfigFileName, string>();
   let teamCache: TeamConfig | null = null;
+  /** Last team.md config that parsed without BLOCKING warnings (fail-safe for hot reloads). */
+  let teamLastGood: TeamConfig | null = null;
+  /** Warnings + timestamp for on-disk team.md content that is not being served. */
+  let teamPending: ConfigIssues | null = null;
   let heartbeatCache: HeartbeatConfig | null = null;
   /** Last heartbeat config that parsed without warnings (fail-safe for hot reloads). */
   let heartbeatLastGood: HeartbeatConfig | null = null;
@@ -137,6 +158,34 @@ export function createConfig(env: AgentEnv, db: Db, bus: Bus): ConfigManager {
     mcpRaw = next;
     mcpCache = null;
     return true;
+  }
+
+  /**
+   * Evaluate the current team.md content with the same last-known-good
+   * semantics as evalHeartbeat/evalMcp: a parse with BLOCKING warnings (an
+   * unparseable line, an unknown field/weight — the kind of thing a truncated
+   * mid-write leaves behind) never replaces a previously clean roster; the
+   * last-good roster keeps being served. "TEAM.md defines no people" is the
+   * ONE non-blocking warning (render.ts already treats it the same way when
+   * building the combined config-issues banner) — a genuinely empty/missing
+   * file is "no data yet", not a parse failure, and must be free to adopt
+   * (materializePeople() also short-circuits on an empty roster rather than
+   * demoting anyone — see its own comment). Boot with a broken file, like the
+   * other two, serves the per-field-defaulted parse (there's no last-good yet).
+   */
+  function evalTeam(): TeamConfig {
+    const parsed = parseTeam(contents.get('team') ?? '');
+    const blocking = parsed.warnings.filter((w) => w !== 'TEAM.md defines no people');
+    if (blocking.length === 0) {
+      teamLastGood = parsed;
+      teamPending = null;
+      return parsed;
+    }
+    teamPending = {
+      warnings: [...parsed.warnings],
+      since: teamPending?.since ?? new Date().toISOString(),
+    };
+    return teamLastGood ?? parsed;
   }
 
   /**
@@ -190,7 +239,20 @@ export function createConfig(env: AgentEnv, db: Db, bus: Bus): ConfigManager {
       });
       return;
     }
-    if (name === 'team') materializePeople();
+    if (name === 'team') {
+      // materializePeople() itself calls manager.team(), which forces
+      // evaluation so teamPending reflects the new content — same pattern as
+      // heartbeat/mcp below. A blocking-warning revision is never adopted (the
+      // last-known-good roster keeps materializing), so a truncated write
+      // can no longer demote the whole roster to tier-2/'departed'.
+      materializePeople();
+      const warnings = teamPending?.warnings;
+      bus.broadcast({
+        type: 'config.changed',
+        payload: { name, ...(warnings && warnings.length > 0 ? { warnings } : {}) },
+      });
+      return;
+    }
     if (name === 'heartbeat') {
       // Force evaluation so heartbeatPending reflects the new content, and
       // surface the warnings in the broadcast (hot-reload warnings used to be
@@ -234,8 +296,12 @@ export function createConfig(env: AgentEnv, db: Db, bus: Bus): ConfigManager {
       return contents.get('persona') ?? '';
     },
     team() {
-      if (!teamCache) teamCache = parseTeam(contents.get('team') ?? '');
+      if (!teamCache) teamCache = evalTeam();
       return teamCache;
+    },
+    teamIssues() {
+      manager.team(); // ensure the current content has been evaluated
+      return teamPending;
     },
     heartbeat() {
       if (!heartbeatCache) heartbeatCache = evalHeartbeat();

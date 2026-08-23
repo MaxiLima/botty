@@ -35,7 +35,7 @@
       "meta": {
         "startAtMinute": 70,
         "durationMin": 60,
-        "attendees": ["marian@acme.example", "sofi@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "attendees": ["marian@acme.example", "sofi@acme.example", "diego@acme.example", "yo@acme.example"],
         "location": "Sala Ombú / Meet"
       }
     },
@@ -134,7 +134,7 @@
       "meta": {
         "startAtMinute": 250,
         "durationMin": 30,
-        "attendees": ["marian@acme.example", "yo@maxolabs.io"],
+        "attendees": ["marian@acme.example", "yo@acme.example"],
         "location": "Meet"
       }
     },
@@ -201,7 +201,7 @@
       "meta": {
         "startAtMinute": 320,
         "durationMin": 45,
-        "attendees": ["sofi@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "attendees": ["sofi@acme.example", "diego@acme.example", "yo@acme.example"],
         "location": "Sala Ceibo"
       }
     },
@@ -305,7 +305,7 @@
       "meta": {
         "startAtMinute": 430,
         "durationMin": 30,
-        "attendees": ["diego@acme.example", "sofi@acme.example", "caro@acme.example", "yo@maxolabs.io"],
+        "attendees": ["diego@acme.example", "sofi@acme.example", "caro@acme.example", "yo@acme.example"],
         "location": "Meet"
       }
     },
@@ -384,7 +384,7 @@
         "meta": {
           "startAtMinute": 30,
           "durationMin": 30,
-          "attendees": ["marian@acme.example", "sofi@acme.example", "yo@maxolabs.io"],
+          "attendees": ["marian@acme.example", "sofi@acme.example", "yo@acme.example"],
           "location": "Meet"
         }
       }

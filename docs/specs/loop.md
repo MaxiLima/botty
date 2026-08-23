@@ -41,15 +41,29 @@ briefings, and the ingest `SourceScheduler`):
 5. **Layer 1 — rules filter** (pure function, no LLM). Nine gates, cheap first; each rejection
    logged with gate name into the tick's `skipped_json`:
    1. cooldown by surface_count (`surface_cooldown_hours`, default {1→48h, 2→96h, 3+→7d})
-      since last_surfaced_at
+      since last_surfaced_at — waived for `SNOOZE_EXPIRED` (the user asked for this moment) and
+      for a task that has become due inside the 24h notify window (the user's timeline outranks
+      our pacing). Gate 2 is never waived, so neither exemption can become an infinite nag.
    2. hard cap surface_count ≥ max_surfaces_per_task (default 3) unless due < 48h
    3. snoozed (snooze_until > now)
    4. closed status
-   5. quiet hours (redundant guard)
+   5. quiet hours (redundant guard) — **waived for run-now**
    6. global min_gap_between_nudges (default 30 min) since last surface of any task
-   7. user active in chat within `chat_active_gate_min` (default 2 min)
+   7. user active in chat within `chat_active_gate_min` (default 2 min) — **waived for run-now**
    8. hourly cap max_proactive_per_hour (default 2)
    9. requester muted
+   10. `judgment_skip_cooldown` — economy only, not a product rule: a task already presented to
+       judgment with the SAME reminderReason and UNCHANGED proactive state is withheld for
+       `STICKY_SKIP_COOLDOWN_HOURS` (6) rather than spending another LLM call to reach the same
+       skip. Process-local memo (no schema change), cleared by any state or reason change, and
+       waived for `SNOOZE_EXPIRED`, a task newly due inside the notify window, and run-now.
+       Runs **last** deliberately: evaluated earlier it would shadow the real reason a candidate
+       was held back in the tick log and the Inspector.
+
+   **Run-now waivers** (gates 5 and 7, plus 10): a user-triggered `run-now` is an explicit
+   request, not an unprompted interruption, so it is not silenced by quiet hours or by the user
+   being mid-conversation. It does NOT waive the hard cap, min-gap, hourly cap or a mute — those
+   damp a *burst* of notifies rather than an unwanted one.
 6. No survivors AND no due checklist items ⇒ record tick, done (no LLM call — this matters
    for cost and inspectability).
 7. Build context: heartbeat instructions + PERSONA excerpt + candidate cards (id, description,
@@ -131,7 +145,11 @@ On each user chat message, classify against surfaces from the last 24h — v1 he
 LLM): message mentions task description keywords + "done/hecho/listo/ya está" ⇒ completed;
 "later/después/snooze" ⇒ snoozed; explicit dismiss via UI buttons ⇒ dismissed(+reason). UI card
 buttons are the primary path (REST `tasks/:id/action`); the tracker fills `proactive_log.response_*`.
-Unanswered after 24h ⇒ expired. Dismissal history feeds judgment context (step 7).
+Unanswered after 24h ⇒ expired — for *answerable* surface kinds only
+(`ANSWERABLE_SURFACE_KINDS`: nudge, meeting_prep). Briefings, reminders, checklist and commitment
+rows carry no buttons and are never stamped `expired`. Response history feeds judgment context
+(step 7), which reads an explicit `dismissed` as a strong stop signal and an unanswered `expired`
+as weak evidence at best.
 
 ## Replay harness
 
@@ -233,12 +251,15 @@ same turn queue as `summarizeSession` so it never blocks the response stream:
   checklist ids so the hallucinated-id guard still holds.
 - A `notify` action executed via `executeCommitmentNotifies` writes a `proactive_log` row
   (`surface_kind: 'commitment'`, no task id) + WS `notification` + macOS banner, then
-  `markCommitmentDelivered`. Delivered commitments count toward `maxPerDay`.
+  `markCommitmentDelivered`. Delivered **inferred** commitments count toward `maxPerDay`;
+  explicit reminders do not (`countCommitmentDeliveriesSince(since, 'inferred')`).
 - **Stale expiry**: `db.expireStaleCommitments(now, COMMITMENT_STALE_GRACE_HOURS)` (24h grace past
-  `due_at`) runs at the *end* of each tick, after that tick has already had its own chance to
-  gather/deliver due commitments — ticks are gated to working hours, so a commitment due over a
+  `due_at`) runs unscoped at the *end* of each tick, after that tick has already had its own chance
+  to gather/deliver due commitments — ticks are gated to working hours, so a commitment due over a
   weekend must survive to Monday's first tick to ever be seen; sweeping before gathering would
-  silently expire it first.
+  silently expire it first. The reminder scan runs its own `kind='explicit'`-scoped sweep before
+  every pass (see below); scoping matters for exactly this reason — an unscoped 15s sweep would
+  expire inferred commitments before any tick could gather them.
 
 **Guardrails** — `## Behavior` keys in HEARTBEAT.md, defaults in `HEARTBEAT_DEFAULTS`:
 `commitment_min_age_min` (default 30) and `commitments_max_per_day` (default 3).
@@ -258,12 +279,20 @@ direct user command for a precise moment, so it fires exactly then.
   `markCommitmentDelivered`.
 - **No judgment LLM call, no `commitment_min_age_min` / `commitments_max_per_day`, and no
   working-/quiet-hours gate** — deliberately: "remind me in 2 minutes at 11pm" should fire at
-  11:02pm. Explicit deliveries do NOT consume the inferred commitments' `maxPerDay` budget
-  (`eligibleCommitments` filters `kind='inferred'`, and the budget counter only sees judgment
-  deliveries).
-- Reminders that come due while the agent is down deliver (late) on the boot scan; anything more
-  than `COMMITMENT_STALE_GRACE_HOURS` (24h) overdue is expired by the tick's existing stale sweep
-  like any other commitment, so a stale "in 2 minutes" never fires days later.
+  11:02pm. Explicit deliveries do NOT consume the inferred commitments' `maxPerDay` budget:
+  `eligibleCommitments` filters `kind='inferred'` on both sides — the due list *and* the delivery
+  counter (`countCommitmentDeliveriesSince(since, 'inferred')`). Before the H10 fix the counter was
+  unscoped, so three delivered reminders zeroed the inferred budget for the day.
+- Reminders that come due while the agent is down deliver (late) on the boot scan, and say so:
+  past `REMINDER_LATE_HINT_MIN` (5 min) the message carries a `(was due Fri 18:07)` hint in the
+  user's local time. Anything more than `COMMITMENT_STALE_GRACE_HOURS` (24h) overdue is expired by
+  the scan's own `kind='explicit'` sweep, which runs *before* delivery on every pass including the
+  boot one — so a stale "in 2 minutes" never fires days later. (The tick's sweep alone could not
+  do this: it is working-hours-gated and only runs on ticks that reach judgment, both of which the
+  boot scan beats.)
+- Duplicate suppression: `insertCommitment` is idempotent for `kind='explicit'` when a row with
+  the same normalized description and `due_at` was created within `REMINDER_DEDUP_WINDOW_MIN`
+  (5 min), so a retried `set_reminder` tool call can't produce two banners.
 - The post-turn inferred-extraction pass dedups against `set_reminder` calls made in the same
   turn (threaded through `capturedTaskDescriptions`), so one "remind me…" message never produces
   both an explicit and an inferred commitment.

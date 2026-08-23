@@ -22,11 +22,12 @@ export type {
   StructuredRequest,
   TokenUsage,
 } from './types.js';
-export { LlmParseError } from './types.js';
+export { LlmParseError, PartialChatTurnError } from './types.js';
 export { MockLlmClient, MOCK_SIGNAL_REGEXES } from './mock.js';
 export {
   SdkLlmClient,
   buildChatPrompt,
+  dedupeToolNames,
   matchChatTool,
   loadSdkQueryFn,
   loadSdkToolServerFactory,

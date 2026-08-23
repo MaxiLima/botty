@@ -16,6 +16,10 @@ export interface AgentEnv {
   simUrl: string;
   mockLlm: boolean;
   port: number;
+  /** Extra ports the Origin guard trusts besides the agent's own bound port
+   * (default: the vite dev server on :5173 — see guards.ts). Override with
+   * BOTTY_DEV_ORIGIN_PORTS (comma-separated). */
+  devOriginPorts: number[];
 }
 
 const CONFIG_FILES = ['persona.md', 'team.md', 'heartbeat.md'] as const;
@@ -27,6 +31,18 @@ export const templatesDir = fileURLToPath(new URL('../config-templates/', import
 
 function truthy(v: string | undefined): boolean {
   return v === '1' || v?.toLowerCase() === 'true';
+}
+
+const DEFAULT_DEV_ORIGIN_PORTS = [5173];
+
+/** Parse "5173,3000" into [5173, 3000]; blank/garbage entries are dropped. */
+function parseDevOriginPorts(v: string | undefined): number[] {
+  if (!v) return DEFAULT_DEV_ORIGIN_PORTS;
+  const ports = v
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return ports.length > 0 ? ports : DEFAULT_DEV_ORIGIN_PORTS;
 }
 
 /**
@@ -50,6 +66,7 @@ export function loadEnv(overrides: Partial<AgentEnv> = {}): AgentEnv {
     simUrl: overrides.simUrl ?? process.env.BOTTY_SIM_URL ?? 'http://localhost:4821',
     mockLlm: overrides.mockLlm ?? truthy(process.env.BOTTY_MOCK_LLM),
     port: overrides.port ?? Number(process.env.AGENT_PORT ?? AGENT_PORT),
+    devOriginPorts: overrides.devOriginPorts ?? parseDevOriginPorts(process.env.BOTTY_DEV_ORIGIN_PORTS),
   };
 
   fs.mkdirSync(path.dirname(env.dbPath), { recursive: true });

@@ -127,8 +127,9 @@ Every fetch is recorded in the Inspector (`ai_decisions` kind `fetch`).
 ## Development
 
 ```sh
-npm run typecheck        # all workspaces
+npm run typecheck        # all workspaces (+ scripts/)
 npm test                 # all workspaces
+npm run e2e              # end-to-end regression net on a throwaway sim+agent pair — docs/TESTING.md §4
 npm run dev:web          # vite dev server on :5173 (proxies to :4820)
 npm run sandbox          # persistent manual-testing playground on 6820/6821 + TUI — docs/TESTING.md §0
 npm run timewarp -- --hours 6                  # shift the DB clock to test the proactive loop

@@ -12,7 +12,7 @@ import {
 import type { Bus } from '../bus/index.js';
 import { nowIso, type Db } from '../db/index.js';
 import { TOOL_TRIGGER_RE } from '../llm/mock.js';
-import type { ChatToolSpec, ChatTurnAttachment, LlmClient } from '../llm/types.js';
+import { PartialChatTurnError, type ChatToolSpec, type ChatTurnAttachment, type LlmClient } from '../llm/types.js';
 import type { Memory } from '../memory/index.js';
 import type { McpChatToolsProvider } from '../mcp/tools.js';
 import { extractCommitments } from './commitments.js';
@@ -94,10 +94,18 @@ export function createChat(deps: {
   /** Where attachment binaries are written; defaults to <dataDir>/attachments (derived from db path). */
   attachmentsDir?: string;
   /**
-   * Heartbeat knobs (session_idle_seal_min, infer_commitments); absent →
-   * HEARTBEAT_DEFAULTS. Read per-call so hot reload applies.
+   * Heartbeat knobs (session_idle_seal_min, infer_commitments, and
+   * response_window_hours — forwarded to the chat tools so task_action stamps
+   * nudge responses inside the configured window); absent → HEARTBEAT_DEFAULTS.
+   * Read per-call so hot reload applies.
    */
-  config?: { heartbeat(): { sessionIdleSealMin: number; inferCommitments: boolean } };
+  config?: {
+    heartbeat(): {
+      sessionIdleSealMin: number;
+      inferCommitments: boolean;
+      responseWindowHours: number;
+    };
+  };
   /**
    * External MCP tools (mcp.json), re-derived per turn so a hot mcp.json
    * reload takes effect without a restart. Absent → chat runs with only the
@@ -107,13 +115,24 @@ export function createChat(deps: {
 }): Chat {
   const { db, bus, llm, memory } = deps;
   const attachmentsDir = deps.attachmentsDir ?? defaultAttachmentsDir(db.path);
-  // Model-callable chat tools (capture_task, task_action, memory_search, session_search).
-  const chatTools = createChatTools({ db, memory, bus });
+  // Model-callable chat tools (capture_task, task_action, set_reminder,
+  // memory_search, session_search). `config` is threaded through so task_action
+  // stamps a nudge response inside the user's CONFIGURED response window, not
+  // just the default one (see loop/response-tracker.ts).
+  const chatTools = createChatTools({ db, memory, bus, config: deps.config });
   const idleSealMs = (): number =>
     (deps.config?.heartbeat().sessionIdleSealMin ?? HEARTBEAT_DEFAULTS.sessionIdleSealMin) * 60_000;
   const inferCommitmentsEnabled = (): boolean =>
     deps.config?.heartbeat().inferCommitments ?? HEARTBEAT_DEFAULTS.inferCommitments;
   let activeSessionId: string | null = null;
+  // Session id of whichever turn is CURRENTLY streaming, if any — distinct from
+  // activeSessionId, which seal() nulls out immediately (the single-active-session
+  // invariant must never wait on an LLM). A session can be sealed while its turn is
+  // still generating (the user hits "fresh context" mid-reply); without this,
+  // interrupt() would find no active session and silently no-op even though the SDK
+  // handle for that turn is still live in llm's `active` map, keyed by the OLD
+  // session id. Cleared once that turn settles (success, error, or partial abort).
+  let inFlightSessionId: string | null = null;
 
   /** Write each attachment to <attachmentsDir>/<nanoid>.<ext>; return the meta entries. */
   function saveAttachments(attachments: ChatAttachment[]): AttachmentMeta[] {
@@ -211,6 +230,7 @@ export function createChat(deps: {
       capturedTaskDescriptions?: string[];
     },
   ): Promise<ChatTurn | null> {
+    inFlightSessionId = sessionId;
     try {
       // Recall runs before the user turn is FTS-indexed — otherwise the just-sent
       // message is always its own top hit and burns a recall slot every turn.
@@ -251,8 +271,29 @@ export function createChat(deps: {
       bus.broadcast({ type: 'chat.done', payload: { turnId, turn } });
       return turn;
     } catch (err) {
+      if (err instanceof PartialChatTurnError && err.partialText.trim()) {
+        // Interrupt / max-turns / mid-stream crash after text had already streamed
+        // to the client (and into the SDK's own resumable session transcript) — see
+        // PartialChatTurnError's doc comment. Persist it locally too, marked
+        // partial, so the next resumed turn's local history matches what the SDK
+        // (and the user, who already saw it stream) actually has.
+        if (err.providerSessionId) db.setProviderSessionId(sessionId, err.providerSessionId);
+        const turn = db.insertChatTurn({
+          id: turnId,
+          sessionId,
+          role: 'assistant',
+          content: err.partialText,
+          meta: { usage: err.usage, partial: true, error: err.message },
+        });
+        db.ftsIndex('chat', turn.id, err.partialText);
+        db.touchSession(sessionId);
+        bus.broadcast({ type: 'chat.error', payload: { turnId, error: err.message } });
+        return turn;
+      }
       bus.broadcast({ type: 'chat.error', payload: { turnId, error: (err as Error).message } });
       return null;
+    } finally {
+      if (inFlightSessionId === sessionId) inFlightSessionId = null;
     }
   }
 
@@ -348,7 +389,10 @@ export function createChat(deps: {
     },
 
     async interrupt() {
-      const sessionId = activeSessionId ?? db.activeSession()?.id;
+      // inFlightSessionId first: a seal() mid-stream nulls activeSessionId
+      // immediately (LOW — interrupt() used to be a silent no-op for exactly
+      // that window, even though the turn's SDK handle was still live).
+      const sessionId = inFlightSessionId ?? activeSessionId ?? db.activeSession()?.id;
       if (sessionId) await llm.interrupt(sessionId);
     },
   };

@@ -11,7 +11,9 @@
 //     permission (global key monitors); the menu-bar item offers the grant.
 //
 // Flags: --send "text" (headless post, for testing) · --show (open panel at
-// launch) · --url http://127.0.0.1:PORT (override; also env BOTTY_URL).
+// launch) · --url http://127.0.0.1:PORT (override; also env BOTTY_URL) ·
+// --self-test (run the pure submit-guard/error-classification checks and
+// exit — no XCTest target exists for this single-file app; see install.sh).
 
 import AppKit
 import ApplicationServices
@@ -60,6 +62,121 @@ func postNote(_ text: String, completion: @escaping (Result<String, Error>) -> V
       as? [String: Any])?["turnId"] as? String ?? "?"
     completion(.success(turnId))
   }.resume()
+}
+
+// MARK: - Submit guard (pure — see PanelController.submit and --self-test)
+
+/// What a `postNote` completion should do to the panel, decided purely from
+/// the generation captured at submit time vs. the controller's generation
+/// when the completion lands. `hide()`/`show()` bump the generation, so a
+/// click-away (or a reopen) while a send is in flight makes any later
+/// completion for that send `.ignored` — the fix for the report's "clicking
+/// away during 'sending…' re-sends the text on the next submit" bug: the
+/// field is cleared eagerly at submit time (see `submit()`), so there is
+/// nothing left in it to accidentally resend either way, but this guard is
+/// what stops a stale response from clobbering whatever the user has typed
+/// since.
+enum SubmitOutcome: Equatable {
+  case ignored
+  case succeeded
+  case failed(String)
+}
+
+func resolveSubmitOutcome(sentGeneration: Int, currentGeneration: Int, result: Result<String, Error>) -> SubmitOutcome {
+  guard sentGeneration == currentGeneration else { return .ignored }
+  switch result {
+  case .success: return .succeeded
+  case .failure(let err): return .failed(errorHint(for: err))
+  }
+}
+
+/// Real cause instead of a blanket "offline" — only an actual connectivity
+/// failure (host unreachable, no network, timed out, DNS) is reported as
+/// offline; an HTTP error from a reachable agent reports its status instead.
+func errorHint(for error: Error) -> String {
+  let ns = error as NSError
+  if ns.domain == NSURLErrorDomain {
+    switch ns.code {
+    case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost,
+      NSURLErrorNotConnectedToInternet, NSURLErrorTimedOut, NSURLErrorCannotFindHost,
+      NSURLErrorDNSLookupFailed:
+      return "⚠ botty offline"
+    default:
+      return "⚠ network error"
+    }
+  }
+  if ns.domain == "botty" {
+    // postNote stashes the HTTP status as the NSError code for a non-2xx response.
+    switch ns.code {
+    case 400..<500: return "⚠ rejected (\(ns.code))"
+    case 500..<600: return "⚠ agent error (\(ns.code))"
+    default: return "⚠ send failed"
+    }
+  }
+  return "⚠ send failed"
+}
+
+/// `--self-test`: exercises the pure guard/classification logic above without
+/// needing AppKit event delivery or a running agent — the lightweight
+/// equivalent of a unit test for this single-file app (no XCTest target
+/// exists; see install.sh, which compiles this file directly with swiftc).
+/// Run with `swift QuickCapture.swift --self-test`.
+func runSelfTest() -> Int32 {
+  var failures = 0
+  func check(_ name: String, _ cond: @autoclosure () -> Bool) {
+    if cond() {
+      print("ok - \(name)")
+    } else {
+      print("FAIL - \(name)")
+      failures += 1
+    }
+  }
+
+  check(
+    "same generation + success -> succeeded",
+    resolveSubmitOutcome(sentGeneration: 1, currentGeneration: 1, result: .success("t1")) == .succeeded)
+
+  // The click-away-during-send regression: hide()/show() bumped the
+  // generation before the response landed — must never touch the field.
+  check(
+    "generation bumped (click-away) + success -> ignored, not resent",
+    resolveSubmitOutcome(sentGeneration: 1, currentGeneration: 2, result: .success("t1")) == .ignored)
+  check(
+    "generation bumped (click-away) + failure -> ignored",
+    resolveSubmitOutcome(sentGeneration: 1, currentGeneration: 2, result: .failure(sampleNetworkError())) == .ignored)
+
+  check(
+    "connection-refused reports offline",
+    resolveSubmitOutcome(sentGeneration: 1, currentGeneration: 1, result: .failure(sampleNetworkError()))
+      == .failed("⚠ botty offline"))
+  check(
+    "timeout reports offline",
+    resolveSubmitOutcome(
+      sentGeneration: 1, currentGeneration: 1,
+      result: .failure(NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))) == .failed("⚠ botty offline"))
+  check(
+    "5xx from a reachable agent reports the status, not offline",
+    resolveSubmitOutcome(
+      sentGeneration: 1, currentGeneration: 1,
+      result: .failure(NSError(domain: "botty", code: 500, userInfo: [NSLocalizedDescriptionKey: "HTTP 500 boom"])))
+      == .failed("⚠ agent error (500)"))
+  check(
+    "4xx from a reachable agent reports rejected, not offline",
+    resolveSubmitOutcome(
+      sentGeneration: 1, currentGeneration: 1,
+      result: .failure(NSError(domain: "botty", code: 400, userInfo: [NSLocalizedDescriptionKey: "HTTP 400 bad"])))
+      == .failed("⚠ rejected (400)"))
+
+  print(failures == 0 ? "\nself-test: \(failures) failures" : "\nself-test: \(failures) FAILURES")
+  return failures == 0 ? 0 : 1
+}
+
+func sampleNetworkError() -> NSError {
+  NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost)
+}
+
+if cliArgs.contains("--self-test") {
+  exit(runSelfTest())
 }
 
 // Headless mode: post and exit (used by tests / scripting).
@@ -222,23 +339,33 @@ final class PanelController: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     generation += 1
     let gen = generation
     field.isEnabled = false
+    // Clear eagerly, before the response lands: once a send is in flight its
+    // text must never still be sitting in the field to be silently resent —
+    // by a click-away (hide() bumps `generation`, orphaning this request's
+    // completion) followed by a reopen and a bare Enter. On failure below the
+    // text is restored, but only when this is still the active generation.
+    field.stringValue = ""
     hint.stringValue = "sending…"
     postNote(text) { [weak self] result in
       DispatchQueue.main.async {
-        guard let self, self.generation == gen else { return }
-        switch result {
-        case .success:
-          self.field.stringValue = ""
+        guard let self else { return }
+        switch resolveSubmitOutcome(sentGeneration: gen, currentGeneration: self.generation, result: result) {
+        case .ignored:
+          return
+        case .succeeded:
           self.field.isEnabled = true
           self.hint.stringValue = "✓ captured"
           self.hint.textColor = NSColor.systemGreen
           DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             if self.generation == gen { self.hide() }
           }
-        case .failure:
-          // Keep the text so nothing is lost.
+        case .failed(let message):
+          // Still the same session (no click-away since) — restore the text
+          // so nothing is lost, and report the real cause, not a blanket
+          // "offline" for what might be a 4xx/5xx from a perfectly reachable agent.
+          self.field.stringValue = text
           self.field.isEnabled = true
-          self.hint.stringValue = "⚠ botty offline"
+          self.hint.stringValue = message
           self.hint.textColor = NSColor.systemRed
           self.panel.makeFirstResponder(self.field)
         }

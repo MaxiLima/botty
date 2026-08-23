@@ -107,8 +107,10 @@ describe('runTick', () => {
       expect(db.listTicks(10)).toHaveLength(1);
     });
 
-    it('inactive day is off-hours even inside the time window', async () => {
-      // 2026-07-05 is a Sunday; activeDays default Mon-Fri
+    it('inactive day skips inside the time window, and says so', async () => {
+      // 2026-07-05 is a Sunday; activeDays default Mon-Fri. The reason is
+      // 'inactive_day', not 'off_hours' — a weekend skip and a 3am skip are
+      // different facts in the tick log.
       const { deps, structured } = makeDeps(
         db,
         bus,
@@ -116,8 +118,35 @@ describe('runTick', () => {
         skipAll,
       );
       const id = await runTick(deps, { trigger: 'schedule', now: '2026-07-05T12:00:00' });
-      expect(db.getTick(id)!.skippedJson).toContain('off_hours');
+      expect(db.getTick(id)!.skippedJson).toContain('inactive_day');
       expect(structured).not.toHaveBeenCalled();
+    });
+
+    it('an active day outside the window is off_hours, not inactive_day', async () => {
+      // 2026-07-06 is a Monday, 03:00 — inside the active days, outside the window.
+      const { deps } = makeDeps(
+        db,
+        bus,
+        heartbeat({ workingHours: { start: '08:00', end: '19:00' }, activeDays: [1, 2, 3, 4, 5] }),
+        skipAll,
+      );
+      const id = await runTick(deps, { trigger: 'schedule', now: '2026-07-06T03:00:00' });
+      expect(db.getTick(id)!.skippedJson).toContain('off_hours');
+    });
+
+    it('a weekend skip does not collapse into the previous off_hours row', async () => {
+      // The "one row per off window" dedup keys on the reason, so Friday night's
+      // off_hours row can't swallow Saturday's inactive_day row.
+      const { deps } = makeDeps(
+        db,
+        bus,
+        heartbeat({ workingHours: { start: '08:00', end: '19:00' }, activeDays: [1, 2, 3, 4, 5] }),
+        skipAll,
+      );
+      await runTick(deps, { trigger: 'schedule', now: '2026-07-03T22:00:00' }); // Friday night
+      const weekend = await runTick(deps, { trigger: 'schedule', now: '2026-07-04T12:00:00' });
+      expect(db.getTick(weekend)!.skippedJson).toContain('inactive_day');
+      expect(db.listTicks(10)).toHaveLength(2);
     });
 
     it('manual run-now BYPASSES the gate and runs the full tick', async () => {
@@ -136,6 +165,27 @@ describe('runTick', () => {
       expect(tick.skippedJson ?? '').not.toContain('off_hours');
       expect(tick.candidatesIn).toBe(1);
       expect(structured).toHaveBeenCalledTimes(1); // judgment ran ⇒ gate bypassed
+    });
+
+    it('manual run-now inside quiet hours still keeps its candidates', async () => {
+      // The working-hours gate was already bypassed for run-now, but every
+      // candidate was then silently rejected by the rules filter's quiet-hours
+      // gate — a user-triggered run gathered candidates and nudged nobody.
+      const task = db.insertTask({ description: 'Quiet-hours manual check', source: 'manual' })!;
+      const old = new Date(Date.parse(offNow) - 5 * 3_600_000).toISOString();
+      db.raw.prepare('UPDATE tasks SET created_at=?, updated_at=? WHERE id=?').run(old, old, task.id);
+      const { deps, structured } = makeDeps(
+        db,
+        bus,
+        heartbeat({ quietHours: { start: '00:00', end: '23:59' } }),
+        skipAll,
+      );
+
+      const id = await runTick(deps, { trigger: 'run-now', now: offNow });
+      const tick = db.getTick(id)!;
+      expect(tick.candidatesIn).toBe(1);
+      expect(tick.candidatesAfterRules).toBe(1);
+      expect(structured).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -349,5 +399,61 @@ describe('runTick', () => {
     expect(JSON.parse(tick.actionsJson!)).toEqual([]);
     expect(tick.skippedJson).toContain('judgment_error');
     expect(events.some((e) => e.type === 'tick.completed')).toBe(true);
+  });
+
+  // H2 bug class (2026-08-21 investigation), one-line follow-up handed over
+  // from the H1 agent: dueSoonTaskIds (the 24h notify-cap exemption, step 9)
+  // used raw Date.parse(dueDate) instead of dueDateInstant (loop/time.ts). A
+  // date-only dueDate is UTC midnight under Date.parse — for this repo's
+  // negative-offset (UTC-3) dev/test environment that instant reads several
+  // hours EARLIER than the date's real local end-of-day, so the old code
+  // could wrongly treat a date-only due date that's actually ~25h away as
+  // already due (trivially "< 24h"), over-exempting it from the
+  // one-notify-per-tick cap.
+  it('a date-only due date ~25h out (per dueDateInstant) is NOT exempt from the one-notify cap', async () => {
+    const now = '2026-07-05T02:00:00.000Z';
+    // Date.parse('2026-07-05') = 2026-07-05T00:00:00Z — 2h in the PAST
+    // relative to `now`; the old buggy code read this as already overdue and
+    // wrongly exempted it. dueDateInstant reads a date-only value as the end
+    // of LOCAL 2026-07-05 (23:59:59 in America/Argentina/Buenos_Aires,
+    // UTC-3) = 2026-07-06T02:59:59Z, ~25h after `now` — correctly NOT due
+    // within 24h.
+    const dateOnlyDue = db.insertTask({
+      description: 'date-only due date',
+      source: 'manual',
+      dueDate: '2026-07-05',
+    })!;
+    // Full ISO timestamp (unambiguous either way) 30h out: a DUE_SOON
+    // candidate, but genuinely NOT within the 24h exemption window — the
+    // control that should always consume the one-notify slot.
+    const laterButUnambiguous = db.insertTask({
+      description: 'due in 30h, unambiguous',
+      source: 'manual',
+      dueDate: new Date(Date.parse(now) + 30 * 3_600_000).toISOString(),
+    })!;
+    const judgment: JudgmentOutput = {
+      tickReasoning: 'two due-soon candidates',
+      actions: [
+        { type: 'notify', taskId: dateOnlyDue.id, score: 9, message: 'a', reasoning: 'r' },
+        { type: 'notify', taskId: laterButUnambiguous.id, score: 8, message: 'b', reasoning: 'r' },
+      ],
+      skipped: [],
+    };
+    const { deps, macNotifier } = makeDeps(db, bus, heartbeat(), judgment);
+    const id = await runTick(deps, { trigger: 'run-now', now });
+
+    const tick = db.getTick(id)!;
+    const actions = JSON.parse(tick.actionsJson!) as { taskId: string }[];
+    // Only ONE notify goes through — proves dateOnlyDue was NOT treated as
+    // due-soon-exempt. Under the old raw-Date.parse bug both would have
+    // passed with nothing dropped for notify_cap.
+    expect(actions).toHaveLength(1);
+    const skipped = JSON.parse(tick.skippedJson!) as {
+      droppedActions: { taskId: string; reason: string }[];
+    };
+    expect(skipped.droppedActions).toContainEqual(
+      expect.objectContaining({ reason: 'notify_cap' }),
+    );
+    expect(macNotifier).toHaveBeenCalledTimes(1);
   });
 });

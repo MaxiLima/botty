@@ -4,12 +4,13 @@ import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import type { ChatTurn, PendingActionStatus } from '@botty/shared';
 import { createApi, type ScheduleInfo } from './api.js';
-import { filterCommands, parseSlash, resolveCommand, type Command, type PanelData } from './commands.js';
+import { filterCommands, parseSlash, resolveCommand, shortId, type Command, type CommandContext, type PanelData } from './commands.js';
 import type { TuiConfig } from './config.js';
 import { clock, scheduleHint } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { face } from './mascot.js';
 import { Panel } from './panels.js';
+import { sanitizeTerminalText } from './sanitize.js';
 import {
   applyChunk,
   applyThinking,
@@ -43,7 +44,7 @@ type ItemBody =
   | { kind: 'info'; text: string }
   | { kind: 'seam' }
   | { kind: 'cmd'; text: string }
-  | { kind: 'nudge'; message: string; nkind: string; score: number | null }
+  | { kind: 'nudge'; message: string; nkind: string; score: number | null; taskId: string | null }
   /** A reply that errored mid-stream — keep the partial text the user saw. */
   | { kind: 'partial'; text: string; error: string; quiet?: boolean }
   /** A consent-gated external tool call the model proposed — approve/dismiss only in the web app. */
@@ -108,6 +109,9 @@ export function App({ config }: { config: TuiConfig }) {
   /** turnIds the user asked to interrupt — lets a subsequent chat.error for the
    * same turn render as a quiet notice instead of the raw SDK diagnostic. */
   const interruptedRef = useRef(new Set<string>());
+  /** taskId of the most recent nudge that carried one — default target for
+   * the argument-less /done, /snooze, /dismiss commands. */
+  const lastNudgeTaskIdRef = useRef<string | null>(null);
 
   /** Non-null while the /onboarding wizard owns the input line (specs/onboarding.md §TUI). */
   const [wizard, setWizard] = useState<WizardState | null>(null);
@@ -317,12 +321,12 @@ export function App({ config }: { config: TuiConfig }) {
   // shared/src/api.ts) — count opens, mirroring the web app's store.
   useWsEvent('tasks.updated', (p) => setTaskCount(p.tasks.filter((t) => t.status === 'open').length));
   useWsEvent('notification', (p) => {
-    pushItem({ kind: 'nudge', message: p.message, nkind: p.kind, score: p.score });
+    lastNudgeTaskIdRef.current = p.taskId;
+    pushItem({ kind: 'nudge', message: p.message, nkind: p.kind, score: p.score, taskId: p.taskId });
   });
-  // Consent-gated external tool calls: TUI is display-only — approving/dismissing
-  // stays in the web app (see the ⧗ notice line's copy).
+  // Consent-gated external tool calls: /approve, /deny (default: the only one pending).
   useWsEvent('action.pending', (p) => {
-    pushItem({ kind: 'approvalPending', text: formatApprovalPendingLine(p.action.summary) });
+    pushItem({ kind: 'approvalPending', text: formatApprovalPendingLine(p.action.id, p.action.summary) });
     setApprovalIds((prev) => (prev.has(p.action.id) ? prev : new Set(prev).add(p.action.id)));
   });
   useWsEvent('action.resolved', (p) => {
@@ -499,7 +503,8 @@ export function App({ config }: { config: TuiConfig }) {
       }
       setBusyCmd(cmd.name);
       try {
-        const res = await cmd.run(api, arg, config.baseUrl);
+        const ctx: CommandContext = { lastNudgeTaskId: lastNudgeTaskIdRef.current };
+        const res = await cmd.run(api, arg, config.baseUrl, ctx);
         if (res.panel) pushItem({ kind: 'panel', panel: res.panel });
         if (res.info) pushItem({ kind: 'info', text: res.info });
         if (res.error) pushItem({ kind: 'error', text: res.error });
@@ -710,7 +715,10 @@ function TranscriptItem({ item, columns }: { item: Item; columns: number }) {
             <Text>{renderMarkdown(item.message, columns - 2)}</Text>
             <Text dimColor>
               {item.nkind}
-              {item.score != null ? ` · ${item.score}/10` : ''} — act on it in the web app or just reply here
+              {item.score != null ? ` · ${item.score}/10` : ''}
+              {item.taskId
+                ? ` · task ${shortId(item.taskId)} — /done, /snooze, /dismiss (or reply here)`
+                : ' — reply here, or act on it in the web app'}
             </Text>
           </Box>
         </Box>
@@ -738,13 +746,13 @@ function TranscriptItem({ item, columns }: { item: Item; columns: number }) {
             {isUser ? 'you' : 'botty'} <Text dimColor>{clock(turn.createdAt)}</Text>
           </Text>
           <Box marginLeft={2} flexDirection="column">
-            {quoted && <Text dimColor>↩ {quoted}</Text>}
+            {quoted && <Text dimColor>↩ {sanitizeTerminalText(quoted)}</Text>}
             {attachments > 0 && (
               <Text dimColor>
                 ⧉ {attachments} image{attachments === 1 ? '' : 's'} (view in the web app)
               </Text>
             )}
-            <Text>{isUser ? turn.content : renderMarkdown(turn.content, columns - 4)}</Text>
+            <Text>{isUser ? sanitizeTerminalText(turn.content) : renderMarkdown(turn.content, columns - 4)}</Text>
           </Box>
         </Box>
       );

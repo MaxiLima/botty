@@ -81,6 +81,48 @@ export function claim(dataDir: string, name: ProcName): Claim {
   return { state: 'owned', pidfile };
 }
 
+function startLockPath(dataDir: string, name: ProcName): string {
+  return path.join(dataDir, 'run', `${name}.starting`);
+}
+
+/** A start lock older than this is assumed to belong to a crashed `botty start` and is reclaimed. */
+const START_LOCK_STALE_MS = 30_000;
+
+/**
+ * Claim the right to spawn `name`, so two `botty start` invocations racing
+ * during the boot window (before the child is listening, so `ownership()`
+ * still reads "down") can't both call `spawnDetached` and stomp each other's
+ * pidfile. Uses `wx` (O_EXCL) for an atomic create-or-fail; a stale lock
+ * (owner crashed before `releaseSpawnLock`) is reclaimed once. Returns false
+ * when someone else currently holds it — the caller should wait for that
+ * spawn's health check instead of spawning its own.
+ */
+export function acquireSpawnLock(dataDir: string, name: ProcName): boolean {
+  const file = startLockPath(dataDir, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  try {
+    const fd = fs.openSync(file, 'wx');
+    fs.writeSync(fd, String(process.pid));
+    fs.closeSync(fd);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    try {
+      if (Date.now() - fs.statSync(file).mtimeMs > START_LOCK_STALE_MS) {
+        fs.rmSync(file, { force: true });
+        return acquireSpawnLock(dataDir, name); // retry once against the now-cleared lock
+      }
+    } catch {
+      /* lock vanished underneath us (the holder released it) — treat as contended, caller retries */
+    }
+    return false;
+  }
+}
+
+export function releaseSpawnLock(dataDir: string, name: ProcName): void {
+  fs.rmSync(startLockPath(dataDir, name), { force: true });
+}
+
 export function listeningPids(port: number): number[] {
   try {
     const out = execFileSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
@@ -158,7 +200,11 @@ export function spawnDetached(cfg: CliConfig, name: ProcName): number {
     port: name === 'agent' ? cfg.port : cfg.simPort,
     startedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(pidfilePath(cfg.dataDir, name), JSON.stringify(pidfile), 'utf8');
+  const dest = pidfilePath(cfg.dataDir, name);
+  // Atomic write: a reader (claim()) must never see a truncated/partial file.
+  const tmp = `${dest}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(pidfile), 'utf8');
+  fs.renameSync(tmp, dest);
   return child.pid;
 }
 
@@ -167,7 +213,7 @@ export function spawnDetached(cfg: CliConfig, name: ProcName): number {
  * so the whole tsx → node chain gets the signal). Never SIGKILL, never
  * kill-by-port: a foreign listener is reported by the caller and left alone.
  */
-export async function stopOwned(cfg: CliConfig, name: ProcName): Promise<'stopped' | 'not-running'> {
+export async function stopOwned(cfg: CliConfig, name: ProcName): Promise<'stopped' | 'not-running' | 'still-running'> {
   const owned = claim(cfg.dataDir, name);
   if (owned.state !== 'owned') return 'not-running';
   const pid = owned.pidfile!.pid;
@@ -185,8 +231,9 @@ export async function stopOwned(cfg: CliConfig, name: ProcName): Promise<'stoppe
     await sleep(250);
   }
   if (processCommand(pid) !== null) {
-    console.error(`warning: ${name} (pid ${pid}) still running 5s after SIGTERM — leaving it (never SIGKILL).`);
-    return 'stopped';
+    // Honest failure: the process is still alive, so don't remove the
+    // pidfile (it's still the real owner) and don't tell the caller it stopped.
+    return 'still-running';
   }
   fs.rmSync(pidfilePath(cfg.dataDir, name), { force: true });
   return 'stopped';

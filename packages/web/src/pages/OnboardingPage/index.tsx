@@ -14,6 +14,7 @@ import type {
 import { api } from '../../lib/api.js';
 import { navigate } from '../../lib/router.js';
 import { markOnboarded } from '../../lib/stores.js';
+import { buildOnboardingRequest } from './buildRequest.js';
 import { WelcomeStep } from './WelcomeStep.js';
 import { PersonaStep, emptyPersonaFields } from './PersonaStep.js';
 import { TeamStep } from './TeamStep.js';
@@ -136,20 +137,7 @@ export function OnboardingPage() {
 
   const buildRequest = (): OnboardingApplyRequest | null => {
     if (!state || !answers) return null;
-    const steps = ONBOARDING_STEPS.filter((s) => confirmed.has(s));
-    if (steps.length === 0) return null;
-    return {
-      answers: {
-        persona: answers.persona,
-        team: answers.team,
-        sources: answers.sources,
-        mcp: answers.mcp,
-        schedule: answers.schedule,
-        directives: answers.directives,
-      },
-      steps,
-      mtimes: state.mtimes,
-    };
+    return buildOnboardingRequest(answers, confirmed, ONBOARDING_STEPS, state.mtimes);
   };
 
   return (

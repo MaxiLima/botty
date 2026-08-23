@@ -126,8 +126,11 @@ Test each link:
 3. **It remembers in conversation:** ask in chat *"qué tengo pendiente hoy?"* — the answer must
    reference those concrete tasks (chat context includes open tasks + FTS recall).
 4. **It reminds unprompted:** timewarp `--hours 6`, run a tick (after 2 min of chat silence) →
-   nudge for the most urgent item. Timewarp `--days 6` and tick again → the untouched tasks now
-   also carry the `STALE` reason (visible in the tick's candidate list).
+   nudge for the most urgent item. Timewarp `--days 6` and tick again → the untouched tasks are
+   still candidates (visible in the tick's candidate list). Note the reason stays `NEVER_SURFACED`
+   for a task botty has never nudged: `gatherCandidates` tags the first matching reason and
+   NEVER_SURFACED outranks STALE. `STALE` shows up on tasks that *were* surfaced and then went
+   quiet — see step 7 below.
 5. **Inject something new live:** sim panel → Inject → "urgent DM from Marian" template → within
    one poll cycle (≤60s in sim mode) it's a task; it becomes nudge-eligible once past the
    min-age gate (or immediately after a timewarp).
@@ -185,5 +188,28 @@ line for the default) and polling/ticking resumes on the next cycle. This is str
 ```sh
 npm test                 # all workspaces: funnel paths, all 9 gates, judgment validation,
                          # parsers, repos, API routes, WS, scenario engine, TUI
-npm run typecheck        # cross-package contract enforcement via @botty/shared
+npm run typecheck        # cross-package contract enforcement via @botty/shared (+ scripts/)
+npm run e2e              # end-to-end regression net — see below
 ```
+
+### `npm run e2e` — scripted end-to-end run (≈30 s, no credentials)
+
+`scripts/e2e/run.ts` spawns a throwaway sim + agent pair (mock LLM, `mkdtemp` data dir,
+**OS-allocated ports** — never 4820/4821, 5820/5821 or 6820/6821) with a fast heartbeat
+profile, drives it over REST/WS and tears it down. Steps, each independently reported:
+`boot` (health, dbPath isolation, collapsed gates) · `guards` (Origin/Host 403s, input
+validation) · `funnel` (workweek @120 min → exact mock outcome counts, 13 tasks, owner
+inversion, tier gate, cross-source dedup, gcal upserts) · `chat` (`!tool` capture_task /
+task_action / set_reminder, exact-time reminder delivered over WS ≤ 20 s) · `sweep` (thread
+ask + my outbound "done" → auto-close + `auto_resolve` card) · `gates` (survivors under the
+fast profile; `quiet_hours`, `muted`, `user_active` via hot-reload + REST; snoozed tasks
+drop out; meeting-prep synthesis) · `timewarp` (stop agent → +6h → restart → aged tasks
+become `NEVER_SURFACED`) · `backfill` (history ingest, distilled decisions, never tasks) ·
+`ws` (every frame parses against `WsEventSchema`).
+
+Flags: `--keep` (leave the data dir + `logs/e2e-{agent,sim}.log` for inspection),
+`--only funnel,chat` (subset). The spawn/teardown primitive lives in
+`scripts/e2e/harness.ts` (`startInstance()`, `timewarp()`, `until()`) and is reusable for
+future integration tests. Gotcha captured there: sim injects anchor `meta.startAtMinute` at
+the **scenario clock** (paused after `advance`), so a "meeting in 30 min" must be injected
+with absolute `meta.startAt`/`endAt`.

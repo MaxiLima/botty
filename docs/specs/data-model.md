@@ -10,7 +10,8 @@ DB at `${BOTTY_DATA_DIR:-~/.botty}/data/botty.db`. `better-sqlite3`, `journal_mo
 migrations on open. Migration files are plain SQL, one statement set per file. Current set:
 001 (tables below), 002 (FTS5 index), 003 (FTS rebuild with `kind`/`ref_id` UNINDEXED),
 004 (`commitments` table), 005 (`pending_actions` table), 006 (`tasks.owner` column),
-007 (`commitments.kind` column — inferred vs explicit reminders).
+007 (`commitments.kind` column — inferred vs explicit reminders), 008 (`ai_decisions`
+cache-token and SDK-reported cost columns — see below).
 
 ## Tables (migration 001)
 
@@ -168,6 +169,9 @@ CREATE TABLE ai_decisions (                        -- THE inspectability backbon
   model TEXT NOT NULL,
   latency_ms INTEGER,
   input_tokens INTEGER, output_tokens INTEGER,
+  cache_read_input_tokens INTEGER,                 -- prompt-cache reads (migration 008); NULL pre-008
+  cache_creation_input_tokens INTEGER,             -- prompt-cache writes (migration 008); NULL pre-008
+  total_cost_usd REAL,                             -- SDK-reported authoritative cost (migration 008); NULL pre-008
   related_ref TEXT,                                -- raw_log id / tick id / session id
   error TEXT,
   created_at TEXT NOT NULL
@@ -235,6 +239,14 @@ ever calls the tool, on `approve`. See `specs/mcp.md`.
 `tasks.owner` (migration 006) fixes extraction wrongly creating tasks owned by the user out of the
 *other* person's own stated commitment ("I'll send you the doc tomorrow" is their promise, not the
 user's to-do). See `specs/ingestion.md`.
+
+`ai_decisions.cache_read_input_tokens` / `cache_creation_input_tokens` / `total_cost_usd`
+(migration 008) fix the costs report under-pricing resumed chat turns, which are almost entirely
+prompt-cache reads that `input_tokens`/`output_tokens` alone never counted. All three columns are
+nullable and backfill nothing — rows written before migration 008 keep pricing exactly as before.
+`total_cost_usd`, when the Agent SDK supplies one, is the authoritative per-call cost and is
+preferred over the computed USD/MTok estimate in `server/costs.ts`. See `server/costs.ts` and
+`db/index.ts`'s `costRollup()`.
 
 ## FTS5 (migrations 002 + 003)
 

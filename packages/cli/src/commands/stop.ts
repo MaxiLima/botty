@@ -11,6 +11,11 @@ export async function stop(cfg: CliConfig): Promise<void> {
       continue;
     }
     const result = await stopOwned(cfg, name);
+    if (result === 'still-running') {
+      console.error(`${name} :${port} — SIGTERM sent but pid ${before.pid} is still running 5s later (never SIGKILL) — not stopped.`);
+      process.exitCode = 1;
+      continue;
+    }
     console.log(`${name} :${port} — ${result === 'stopped' ? 'stopped' : 'not running'}.`);
   }
   console.log(`data kept in ${cfg.dataDir}.`);

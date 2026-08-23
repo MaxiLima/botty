@@ -1,5 +1,27 @@
 /** Local-time helpers for the loop (quiet hours, active days, briefing cron). */
 
+import { defaultTimeZone, resolveDueAt } from '../chat/commitments.js';
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Comparable instant (ms since epoch) for a stored due-date value — use this at
+ * every due-date arithmetic site instead of `Date.parse(dueDate)` directly.
+ * H2 bugfix (2026-08-21 investigation): `Date.parse('YYYY-MM-DD')` is UTC
+ * MIDNIGHT, so for a negative-offset user a date-only due date reads as
+ * "overdue"/"due within 48h" hours before its actual local calendar day even
+ * starts (21:00 the PRIOR local evening for UTC-3). A date-only value means
+ * the END of that calendar day in the user's own zone (23:59:59 local); a
+ * full instant (has a time component, zone-aware or naive) is trusted and
+ * used as-is. Reuses resolveDueAt's offset math (chat/commitments.ts) rather
+ * than duplicating it.
+ */
+export function dueDateInstant(due: string, timeZone: string = defaultTimeZone()): number {
+  if (!DATE_ONLY_RE.test(due)) return Date.parse(due);
+  const resolved = resolveDueAt(`${due}T23:59:59`, timeZone);
+  return resolved ? Date.parse(resolved) : Date.parse(due);
+}
+
 /** "HH:MM" → minutes since midnight. Returns null on malformed input. */
 export function parseHHMM(value: string): number | null {
   const m = value.match(/^(\d{1,2}):(\d{2})$/);
@@ -40,6 +62,12 @@ export function isActiveDay(nowIso: string, activeDays: number[]): boolean {
  *   always applies to the calendar day of `nowIso` itself.
  * - Malformed or degenerate (start === end) windows disable the gate (always
  *   within), so a config typo can never silently switch botty off.
+ * - The end boundary is INCLUSIVE (`now <= end`, not `now < end`). A briefing
+ *   (or tick) scheduled for exactly `working_hours.end` — a common setup,
+ *   e.g. an evening brief timed to the end of the day — must still be able
+ *   to fire: with an exclusive end, the gate re-checked at fire time (see
+ *   loop/index.ts) dropped it in the same minute it was computed for. The
+ *   minute AFTER `end` is still excluded, same as before.
  *
  * Used by the tick scheduler, briefings, and the ingest source scheduler.
  */
@@ -52,7 +80,7 @@ export function isWithinWorkingHours(
   const end = parseHHMM(opts.workingHours.end);
   if (start === null || end === null || start === end) return true;
   const now = localMinutes(nowIso);
-  return start < end ? now >= start && now < end : now >= start || now < end;
+  return start < end ? now >= start && now <= end : now >= start || now <= end;
 }
 
 /**

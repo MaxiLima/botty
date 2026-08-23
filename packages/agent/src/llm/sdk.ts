@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.js';
 import {
   LlmParseError,
+  PartialChatTurnError,
   type ChatToolSpec,
   type ChatTurnRequest,
   type ChatTurnResult,
@@ -23,7 +24,16 @@ export interface SdkMessageLike {
   is_error?: boolean;
   result?: string;
   errors?: string[];
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    /** Input tokens served from the prompt cache — priced far below plain input. */
+    cache_read_input_tokens?: number;
+    /** Input tokens written to the prompt cache this call — priced above plain input. */
+    cache_creation_input_tokens?: number;
+  };
+  /** SDK-computed authoritative cost for this call (SDKResultMessage), when supplied. */
+  total_cost_usd?: number;
   event?: {
     type: string;
     content_block?: { type: string };
@@ -121,11 +131,88 @@ export function matchChatTool(tools: ChatToolSpec[] | undefined, blockName: stri
   return tools?.find((t) => t.name === blockName || blockName === `mcp__${CHAT_TOOL_SERVER}__${t.name}`);
 }
 
+/**
+ * De-duplicates chat tool names before they reach the SDK's tool factory. Two
+ * external MCP servers can independently produce the same `${server}_${tool}`
+ * name (mcp/tools.ts composes it from user-chosen server keys/tool names), and
+ * the Agent SDK's underlying McpServer.tool() throws `Tool X is already
+ * registered` on a duplicate — synchronously, inside loadSdkToolServerFactory,
+ * BEFORE query() is even called. Unguarded, that takes down every single chat
+ * turn for as long as the colliding mcp.json config stands. The first tool
+ * under a given name wins its name as-is; later collisions get a numeric
+ * suffix so every tool stays callable (just under a slightly different name
+ * the model sees in its own tool list — never a crash).
+ *
+ * Returns the SAME array instance when there is nothing to dedupe (the
+ * overwhelmingly common case) rather than always allocating a copy.
+ */
+export function dedupeToolNames(specs: ChatToolSpec[]): ChatToolSpec[] {
+  const names = new Set<string>();
+  let hasCollision = false;
+  for (const spec of specs) {
+    if (names.has(spec.name)) {
+      hasCollision = true;
+      break;
+    }
+    names.add(spec.name);
+  }
+  if (!hasCollision) return specs;
+
+  const seen = new Map<string, number>();
+  return specs.map((spec) => {
+    const count = seen.get(spec.name) ?? 0;
+    seen.set(spec.name, count + 1);
+    if (count === 0) return spec;
+    return { ...spec, name: `${spec.name}_${count + 1}` };
+  });
+}
+
+/**
+ * process.env minus every Anthropic auth override and Claude Code session
+ * marker, so a chat/structured SDK run always falls back to the user's actual
+ * Claude subscription login rather than inheriting stray ANTHROPIC_API_KEY /
+ * CLAUDECODE* vars from whatever shell launched the agent (API-key auth
+ * disables the claude.ai connectors real mode depends on — see `botty doctor`).
+ * Mirrors ingest/adapters/real/connector.ts's `connectorEnv`; duplicated
+ * rather than imported to avoid a chat/llm → ingest dependency.
+ */
+function chatSdkEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    if (key === 'ANTHROPIC_API_KEY' || key === 'ANTHROPIC_AUTH_TOKEN') continue;
+    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 interface RunResult {
   text: string;
   usage: TokenUsage;
   latencyMs: number;
   sessionId: string | null;
+}
+
+/** A TokenUsage with every counter zeroed/null — the value before a 'result' message arrives. */
+function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: null };
+}
+
+/**
+ * Build a TokenUsage from an SDK 'result' message. Covers both usage sites
+ * (streamed chat turns and the ephemeral structured() runs) — see H12: prior
+ * code read only input_tokens/output_tokens and ignored cache read/creation
+ * tokens and total_cost_usd, which wildly understated resumed-chat-turn cost.
+ */
+function usageFromResult(m: SdkMessageLike): TokenUsage {
+  return {
+    inputTokens: m.usage?.input_tokens ?? 0,
+    outputTokens: m.usage?.output_tokens ?? 0,
+    cacheReadInputTokens: m.usage?.cache_read_input_tokens ?? 0,
+    cacheCreationInputTokens: m.usage?.cache_creation_input_tokens ?? 0,
+    totalCostUsd: m.total_cost_usd ?? null,
+  };
 }
 
 /** Max silence between SDK stream messages before we treat the run as hung. */
@@ -281,10 +368,14 @@ export class SdkLlmClient implements LlmClient {
   private async chatAttempt(req: ChatTurnRequest, resume: string | null): Promise<ChatTurnResult> {
     const model = this.deps.modelFor('chat');
     const started = Date.now();
+    // De-duped BEFORE the SDK ever sees them — a name collision across two
+    // external MCP servers must never throw inside the tool factory (see
+    // dedupeToolNames doc comment). `matchChatTool` below is keyed off this
+    // same de-duped list so summaries stay matched to the right spec.
+    const tools = req.tools?.length ? dedupeToolNames(req.tools) : req.tools;
     // Chat tools ride in as an in-process SDK MCP server; `tools: []` still
     // disables every built-in tool (Bash, Read, …) — only our four are exposed.
-    const toolWiring =
-      req.tools?.length && this.deps.toolServerFactory ? this.deps.toolServerFactory(req.tools) : null;
+    const toolWiring = tools?.length && this.deps.toolServerFactory ? this.deps.toolServerFactory(tools) : null;
     const handle = this.deps.queryFn({
       prompt: buildChatPrompt(req),
       options: {
@@ -296,6 +387,7 @@ export class SdkLlmClient implements LlmClient {
         permissionMode: 'dontAsk',
         maxTurns: 8,
         ...(resume ? { resume } : {}),
+        env: chatSdkEnv(),
       },
     });
     this.active.set(req.sessionKey, handle);
@@ -303,7 +395,7 @@ export class SdkLlmClient implements LlmClient {
     let streamed = '';
     let resultText = '';
     let sessionId: string | null = null;
-    let usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+    let usage: TokenUsage = emptyUsage();
     let thinkingOpen = false;
     let error: string | null = null;
     let thrown: unknown;
@@ -328,7 +420,7 @@ export class SdkLlmClient implements LlmClient {
             if (block.type === 'tool_use' && block.name) {
               // Our chat tools stream as `mcp__botty__<name>` — emit the friendly
               // name plus a short input-derived summary for the UIs.
-              const spec = matchChatTool(req.tools, block.name);
+              const spec = matchChatTool(tools, block.name);
               if (spec) {
                 req.onEvent({
                   type: 'tool_use',
@@ -341,10 +433,7 @@ export class SdkLlmClient implements LlmClient {
             }
           }
         } else if (m.type === 'result') {
-          usage = {
-            inputTokens: m.usage?.input_tokens ?? 0,
-            outputTokens: m.usage?.output_tokens ?? 0,
-          };
+          usage = usageFromResult(m);
           if (m.is_error) error = m.errors?.join('; ') || `llm error: ${m.subtype ?? 'unknown'}`;
           else if (typeof m.result === 'string' && m.result.length > 0) resultText = m.result;
         }
@@ -360,7 +449,18 @@ export class SdkLlmClient implements LlmClient {
       req.onEvent({ type: 'done' });
     }
 
-    const text = resultText || streamed;
+    // Prefer the locally-accumulated stream over the SDK's own 'result' message
+    // (Appendix C, "likely — needs repro"): a multi-segment reply (text → tool_use
+    // → more text) can involve more than one assistant message within a single
+    // turn (num_turns > 1), and the SDKResultMessage's `result` field carries only
+    // the FINAL assistant message's text — not the whole turn's. `streamed`, by
+    // contrast, is built by appending every text_delta as it arrives across the
+    // ENTIRE turn (see the stream_event branch below), so it's exactly what the
+    // client already saw via chat.chunk — using it here keeps saved history
+    // faithful to that, instead of silently dropping the first segment. Falls
+    // back to resultText only when nothing streamed at all (e.g. a queryFn/test
+    // stub that skips stream_event and only emits the final assistant message).
+    const text = streamed || resultText;
     const latencyMs = Date.now() - started;
     // Never persist a session id from a run that died mid-stream.
     if (sessionId && thrown === undefined) this.deps.db.setProviderSessionId(req.sessionKey, sessionId);
@@ -376,11 +476,35 @@ export class SdkLlmClient implements LlmClient {
       latencyMs,
       inputTokens: usage.inputTokens || null,
       outputTokens: usage.outputTokens || null,
+      cacheReadInputTokens: usage.cacheReadInputTokens || null,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens || null,
+      totalCostUsd: usage.totalCostUsd,
       relatedRef: req.sessionKey,
       error,
     });
-    if (thrown !== undefined) throw thrown;
-    if (error) throw new Error(error);
+    // Interrupt / max-turns / mid-stream crash: the run ends in error (thrown from
+    // the stream, or an `is_error` result like error_max_turns/interrupted) but text
+    // already streamed to req.onEvent — and so already reached the client, and the
+    // SDK's own resumable session transcript already contains it. Losing it from OUR
+    // history here would silently fork the two, and the next resumed turn would be
+    // built on a system prompt that doesn't match what the model actually said last.
+    // Surface it as PartialChatTurnError so the caller (chat/index.ts) can persist it
+    // instead of discarding it like an ordinary failed turn.
+    if (thrown !== undefined) {
+      if (text.trim()) {
+        throw new PartialChatTurnError(
+          thrown instanceof Error ? thrown.message : String(thrown),
+          text,
+          usage,
+          sessionId,
+        );
+      }
+      throw thrown;
+    }
+    if (error) {
+      if (text.trim()) throw new PartialChatTurnError(error, text, usage, sessionId);
+      throw new Error(error);
+    }
     return { text, providerSessionId: sessionId ?? resume ?? '', usage };
   }
 
@@ -390,6 +514,11 @@ export class SdkLlmClient implements LlmClient {
     let latencyMs = 0;
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadInputTokens = 0;
+    let cacheCreationInputTokens = 0;
+    // Sum of each attempt's SDK-reported cost; null until the first attempt reports one
+    // (an attempt that never reached a 'result' message contributes nothing either way).
+    let totalCostUsd: number | null = null;
     let lastText = '';
 
     const attempt = async (prompt: string): Promise<{ text: string } | { failed: string }> => {
@@ -397,6 +526,9 @@ export class SdkLlmClient implements LlmClient {
       latencyMs += r.latencyMs;
       inputTokens += r.usage.inputTokens;
       outputTokens += r.usage.outputTokens;
+      cacheReadInputTokens += r.usage.cacheReadInputTokens;
+      cacheCreationInputTokens += r.usage.cacheCreationInputTokens;
+      if (r.usage.totalCostUsd !== null) totalCostUsd = (totalCostUsd ?? 0) + r.usage.totalCostUsd;
       lastText = r.text;
       return { text: r.text };
     };
@@ -426,6 +558,9 @@ export class SdkLlmClient implements LlmClient {
           latencyMs,
           inputTokens: inputTokens || null,
           outputTokens: outputTokens || null,
+          cacheReadInputTokens: cacheReadInputTokens || null,
+          cacheCreationInputTokens: cacheCreationInputTokens || null,
+          totalCostUsd,
           error: `parse failed after retry: ${parsed.error}`,
           output: { rawText: lastText.slice(0, 4000) },
         });
@@ -437,6 +572,9 @@ export class SdkLlmClient implements LlmClient {
         latencyMs,
         inputTokens: inputTokens || null,
         outputTokens: outputTokens || null,
+        cacheReadInputTokens: cacheReadInputTokens || null,
+        cacheCreationInputTokens: cacheCreationInputTokens || null,
+        totalCostUsd,
       });
       return parsed.value;
     } catch (err) {
@@ -447,6 +585,9 @@ export class SdkLlmClient implements LlmClient {
         // Tokens consumed by any completed attempt before the failure.
         inputTokens: inputTokens || null,
         outputTokens: outputTokens || null,
+        cacheReadInputTokens: cacheReadInputTokens || null,
+        cacheCreationInputTokens: cacheCreationInputTokens || null,
+        totalCostUsd,
         error: (err as Error).message,
       });
       throw err;
@@ -475,12 +616,22 @@ export class SdkLlmClient implements LlmClient {
         permissionMode: 'dontAsk',
         maxTurns: 2,
         persistSession: false,
+        // Without this, a structured() call is silent on the wire until its
+        // single final message — a legitimately slow generation (long context,
+        // extended thinking) can outlast STREAM_INACTIVITY_MS with nothing to
+        // reset the watchdog, and gets killed as "hung" even though the model
+        // is still working. Partial deltas arrive throughout generation and
+        // keep resetting withInactivityTimeout's clock; we don't act on their
+        // content here (only 'assistant'/'result' are inspected below), but
+        // their mere arrival is what keeps a long real call alive.
+        includePartialMessages: true,
+        env: chatSdkEnv(),
       },
     });
     let assistantText = '';
     let resultText = '';
     let sessionId: string | null = null;
-    let usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+    let usage: TokenUsage = emptyUsage();
     for await (const m of withInactivityTimeout(handle, STREAM_INACTIVITY_MS)) {
       if (m.session_id) sessionId = m.session_id;
       if (m.type === 'assistant') {
@@ -488,10 +639,7 @@ export class SdkLlmClient implements LlmClient {
           if (block.type === 'text' && block.text) assistantText += block.text;
         }
       } else if (m.type === 'result') {
-        usage = {
-          inputTokens: m.usage?.input_tokens ?? 0,
-          outputTokens: m.usage?.output_tokens ?? 0,
-        };
+        usage = usageFromResult(m);
         if (m.is_error) throw new Error(m.errors?.join('; ') || `llm error: ${m.subtype ?? 'unknown'}`);
         if (typeof m.result === 'string' && m.result.length > 0) resultText = m.result;
       }

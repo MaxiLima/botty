@@ -13,11 +13,41 @@ export interface HistoryPage {
   nextCursor: string | null;
 }
 
+/**
+ * Result of a watermark-aware fetch (see `fetchWindow` below): the events plus
+ * the safe `since` to persist afterward, computed by the adapter itself.
+ */
+export interface FetchWindowResult {
+  events: SourceEvent[];
+  /**
+   * Safe value for the caller to persist as the new watermark. Must never be
+   * later than the oldest item the adapter didn't manage to fetch this check
+   * — i.e. it may equal the check's start time when the window was fully
+   * drained, but must stay pinned at (or behind) the floor that was searched
+   * when paging was cut short, so nothing between the old watermark and that
+   * floor is ever silently skipped.
+   */
+  nextSince: string;
+  /** True when the check ended before the window was fully drained (hit the
+   * per-check page cap) — some events for this window may remain unfetched. */
+  truncated: boolean;
+}
+
 /** Deterministic fetch boundary — the only thing that talks to a source. */
 export interface SourceAdapter {
   readonly source: SourceId;
   /** Fetch events newer than `since` (ISO). Must be idempotent; dedup happens downstream. */
   fetch(since: string | null): Promise<SourceEvent[]>;
+  /**
+   * Watermark-aware variant of `fetch`, for sources that may need to page
+   * through a backlog larger than one connector call can return (H5): the
+   * adapter computes the safe `since` to persist itself instead of the caller
+   * assuming "check succeeded ⇒ fully drained ⇒ advance to now". Optional —
+   * the scheduler falls back to `fetch` + advance-to-check-start when absent
+   * (sim/stub adapters, and gcal, which ignores `since` altogether and always
+   * re-lists its lookahead window).
+   */
+  fetchWindow?(since: string | null): Promise<FetchWindowResult>;
   /**
    * Backfill: page backwards through history, newest-first (docs/specs/backfill.md).
    * The cursor is adapter-opaque (sim: engine cursor; real M4: Slack cursor /
@@ -93,6 +123,27 @@ async function loadRealAdapters(
 }
 
 /**
+ * Wrap a one-shot loader in a lazy, memoizing cache — but only cache success.
+ * (LOW finding: `realFamily ??=` used to cache a REJECTED promise forever,
+ * since `??=` only reassigns on null/undefined and a rejected promise is
+ * neither — one transient SDK import failure made every subsequent real poll
+ * fail until restart.) A rejection clears the cache so the next call retries
+ * `load()` instead of replaying the same rejection.
+ */
+export function makeRealFamilyLoader<T>(load: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | null = null;
+  return () => {
+    if (!cached) {
+      cached = load().catch((err: unknown) => {
+        cached = null;
+        throw err;
+      });
+    }
+    return cached;
+  };
+}
+
+/**
  * One adapter per source, family selected by BOTTY_MODE. Real mode: gmail/gcal
  * poll through the user's claude.ai MCP connectors (docs/specs/ingestion.md);
  * slack/jira/github stay credential-gated stubs. The connector family loads
@@ -107,9 +158,7 @@ export function createAdapters(
       SOURCES.map((source) => [source, createSimAdapter(source, env.simUrl)]),
     ) as AdapterMap;
   }
-  let realFamily: Promise<Partial<Record<SourceId, SourceAdapter>>> | null = null;
-  const real = (): Promise<Partial<Record<SourceId, SourceAdapter>>> =>
-    (realFamily ??= loadRealAdapters(env, deps));
+  const real = makeRealFamilyLoader(() => loadRealAdapters(env, deps));
   const lazy = (source: SourceId): SourceAdapter => ({
     source,
     async fetch(since: string | null): Promise<SourceEvent[]> {

@@ -73,24 +73,43 @@ export const COST_CATEGORY_BY_KIND: Record<string, CostCategory> = {
 };
 
 export interface ModelPricing {
-  /** USD per million input tokens. */
+  /** USD per million input tokens (uncached). */
   inputPerMTok: number;
   /** USD per million output tokens. */
   outputPerMTok: number;
+  /**
+   * USD per million cache-read input tokens. Optional so a hand-written
+   * `llm.pricing` override can supply only input/output and still be valid —
+   * costs.ts falls back to 0.1x inputPerMTok (Anthropic's list-price cache-read
+   * rate) when omitted.
+   */
+  cacheReadPerMTok?: number;
+  /**
+   * USD per million cache-creation (write) input tokens, 5-minute TTL — the
+   * Agent SDK never sets an explicit TTL, so this is the rate that applies.
+   * Optional; costs.ts falls back to 1.25x inputPerMTok when omitted.
+   */
+  cacheCreationPerMTok?: number;
 }
 
 /**
  * Claude API list prices (USD/MTok). botty runs on a subscription via the Agent
  * SDK, so the costs report prices what the recorded usage *would* cost at API
  * rates. Extend/override per model via the `llm.pricing` settings key.
+ *
+ * Cache rates are Anthropic's standard multipliers over each model's own
+ * inputPerMTok — cache reads at 0.1x, cache-creation writes at 1.25x (5-minute
+ * TTL, the default and only TTL botty uses) — per the `claude-api` skill's
+ * prompt-caching reference ("Cache reads cost ~0.1x base input price. Cache
+ * writes cost 1.25x for 5-minute TTL, 2x for 1-hour TTL.").
  */
 export const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
-  'claude-sonnet-5': { inputPerMTok: 3, outputPerMTok: 15 },
-  'claude-sonnet-4-6': { inputPerMTok: 3, outputPerMTok: 15 },
-  'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5 },
-  'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25 },
-  'claude-opus-4-7': { inputPerMTok: 5, outputPerMTok: 25 },
-  'claude-opus-4-6': { inputPerMTok: 5, outputPerMTok: 25 },
+  'claude-sonnet-5': { inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.3, cacheCreationPerMTok: 3.75 },
+  'claude-sonnet-4-6': { inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.3, cacheCreationPerMTok: 3.75 },
+  'claude-haiku-4-5': { inputPerMTok: 1, outputPerMTok: 5, cacheReadPerMTok: 0.1, cacheCreationPerMTok: 1.25 },
+  'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5, cacheCreationPerMTok: 6.25 },
+  'claude-opus-4-7': { inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5, cacheCreationPerMTok: 6.25 },
+  'claude-opus-4-6': { inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5, cacheCreationPerMTok: 6.25 },
 };
 
 export const HEARTBEAT_DEFAULTS = {

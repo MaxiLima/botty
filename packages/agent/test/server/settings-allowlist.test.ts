@@ -35,6 +35,7 @@ async function setup(): Promise<Harness> {
     simUrl: 'http://localhost:4821',
     mockLlm: true,
     port: 0,
+    devOriginPorts: [5173],
   };
   fs.mkdirSync(env.configArchiveDir, { recursive: true });
   fs.writeFileSync(path.join(env.configDir, 'persona.md'), '# PERSONA\nYou are botty.', 'utf8');
@@ -149,6 +150,125 @@ describe('server: PUT /api/settings allowlist', () => {
       });
       expect(res.status).toBe(400);
       expect(h.ctx.db.getSetting('llm.models')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+});
+
+describe('server: PUT /api/settings value validation', () => {
+  it('rejects an empty-string model value for an allowlisted key (repro: llm.models.chat: "")', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, { 'llm.models': { chat: '' } });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; detail?: string };
+      expect(body.error).toBe('validation_error');
+      expect(body.detail).toContain('llm.models');
+      expect(h.ctx.db.getSetting('llm.models')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects a whitespace-only model value', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, { 'llm.models': { chat: '   ' } });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.models')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects an unknown task key under llm.models', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, { 'llm.models': { not_a_real_task: 'claude-opus-4-8' } });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.models')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects a non-object llm.models value', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, { 'llm.models': 'claude-opus-4-8' });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.models')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects a negative/NaN llm.pricing rate', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, {
+        'llm.pricing': { 'claude-opus-4-8': { inputPerMTok: -1, outputPerMTok: 25 } },
+      });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.pricing')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects llm.pricing missing required rates', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, {
+        'llm.pricing': { 'claude-opus-4-8': { inputPerMTok: 5 } },
+      });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.pricing')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects llm.pricing with unknown extra fields (strict shape)', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, {
+        'llm.pricing': { 'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25, extra: 'nope' } },
+      });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.pricing')).toBeUndefined();
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('accepts a valid partial llm.pricing override (cache rates optional)', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, {
+        'llm.pricing': { 'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25 } },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { settings: Record<string, unknown> };
+      expect(body.settings['llm.pricing']).toEqual({
+        'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25 },
+      });
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects the whole patch (no partial writes) when one value among several is invalid', async () => {
+    const h = await setup();
+    try {
+      const res = await putSettings(h.base, {
+        'llm.models': { chat: 'claude-opus-4-8' },
+        'llm.pricing': { 'claude-opus-4-8': { inputPerMTok: -1, outputPerMTok: 25 } },
+      });
+      expect(res.status).toBe(400);
+      expect(h.ctx.db.getSetting('llm.models')).toBeUndefined();
+      expect(h.ctx.db.getSetting('llm.pricing')).toBeUndefined();
     } finally {
       await h.teardown();
     }

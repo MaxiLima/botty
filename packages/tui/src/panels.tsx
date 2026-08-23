@@ -16,9 +16,17 @@ import { COMMANDS, type PanelData } from './commands.js';
 import { priorityColor, priorityLabel, shortDate, summarizeGates, timeAgo } from './format.js';
 import { renderMarkdown } from './markdown.js';
 import { MASCOT_LINES, TAGLINE } from './mascot.js';
+import { sanitizeTerminalText } from './sanitize.js';
 
+/**
+ * Truncate/pad for a fixed-width column. `sanitizeTerminalText` first — every
+ * free-text field routed through here (task titles/descriptions, people
+ * names/notes, interaction snippets, …) can originate from ingested content,
+ * so this is the choke point for panel rendering the same way `renderMarkdown`
+ * is for markdown rendering.
+ */
 export function fit(s: string, n: number): string {
-  const flat = s.replace(/\s+/g, ' ').trim();
+  const flat = sanitizeTerminalText(s).replace(/\s+/g, ' ').trim();
   return flat.length > n ? `${flat.slice(0, Math.max(0, n - 1))}…` : flat.padEnd(n);
 }
 
@@ -249,7 +257,11 @@ function CostsBody({ report, width }: { report: CostsReport; width: number }) {
             <Text> {fmtUsd(t.costUsd).padStart(9)}</Text>
             <Text dimColor>
               {' '}
-              {`${fmtTokens(t.inputTokens)} in · ${fmtTokens(t.outputTokens)} out · ${t.calls} calls`}
+              {`${fmtTokens(t.inputTokens)} in`}
+              {t.cacheReadInputTokens + t.cacheCreationInputTokens > 0
+                ? ` (+${fmtTokens(t.cacheReadInputTokens + t.cacheCreationInputTokens)} cached)`
+                : ''}
+              {` · ${fmtTokens(t.outputTokens)} out · ${t.calls} calls`}
             </Text>
           </Text>
         );
@@ -263,7 +275,11 @@ function CostsBody({ report, width }: { report: CostsReport; width: number }) {
           <Text> {(m.priced ? fmtUsd(m.costUsd) : '—').padStart(9)}</Text>
           <Text dimColor>
             {' '}
-            {`${fmtTokens(m.inputTokens)} in · ${fmtTokens(m.outputTokens)} out · ${m.calls} calls`}
+            {`${fmtTokens(m.inputTokens)} in`}
+            {m.cacheReadInputTokens + m.cacheCreationInputTokens > 0
+              ? ` (+${fmtTokens(m.cacheReadInputTokens + m.cacheCreationInputTokens)} cached)`
+              : ''}
+            {` · ${fmtTokens(m.outputTokens)} out · ${m.calls} calls`}
             {m.priced ? '' : ' · no pricing'}
           </Text>
         </Text>
@@ -271,11 +287,14 @@ function CostsBody({ report, width }: { report: CostsReport; width: number }) {
       {w.byModel.length === 0 && <Text dimColor>  none</Text>}
       {w.totals.unpricedCalls > 0 && (
         <Text color="yellow">
-          {w.totals.unpricedCalls} call{w.totals.unpricedCalls === 1 ? '' : 's'} counted at $0 (model
-          without a pricing entry)
+          {w.totals.unpricedCalls} call{w.totals.unpricedCalls === 1 ? '' : 's'} had neither a reported
+          cost nor a pricing entry, counted at $0
         </Text>
       )}
-      <Text dimColor>estimated at API list prices — botty runs on your subscription, not billed</Text>
+      <Text dimColor>
+        estimated at API list prices (cache reads/writes at their own rates) — botty runs on your
+        subscription, not billed; an exact reported cost is used instead when a call has one
+      </Text>
       <Text dimColor>daily chart & window switcher live in the web app's Costs page</Text>
     </>
   );

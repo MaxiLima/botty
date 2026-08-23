@@ -15,17 +15,33 @@ export function InspectorPage() {
   const [tab, setTab] = useState<Tab>('funnel');
   return (
     <div className="inspector-page">
-      <nav className="tab-bar">
+      <nav className="tab-bar" role="tablist" aria-label="Inspector views">
         {TABS.map((t) => (
-          <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+          <button
+            key={t}
+            id={`inspector-tab-${t}`}
+            role="tab"
+            aria-selected={tab === t}
+            aria-controls={`inspector-panel-${t}`}
+            tabIndex={tab === t ? 0 : -1}
+            className={`tab ${tab === t ? 'active' : ''}`}
+            onClick={() => setTab(t)}
+          >
             {t}
           </button>
         ))}
       </nav>
-      {tab === 'funnel' && <FunnelTab />}
-      {tab === 'ticks' && <TicksTab />}
-      {tab === 'decisions' && <DecisionsTab />}
-      {tab === 'sources' && <SourcesTab />}
+      {TABS.map((t) => (
+        <div
+          key={t}
+          id={`inspector-panel-${t}`}
+          role="tabpanel"
+          aria-labelledby={`inspector-tab-${t}`}
+          hidden={tab !== t}
+        >
+          {tab === t && (t === 'funnel' ? <FunnelTab /> : t === 'ticks' ? <TicksTab /> : t === 'decisions' ? <DecisionsTab /> : <SourcesTab />)}
+        </div>
+      ))}
     </div>
   );
 }
@@ -193,10 +209,14 @@ function TicksTab() {
   });
 
   useEffect(() => {
-    if (!openId) {
-      setDetail(null);
-      return;
-    }
+    // Clear synchronously on every openId change (not just when it goes
+    // null) — otherwise the previous tick's `detail` (its judgment included)
+    // stays on screen, mislabeled as the newly-opened tick's, until this
+    // fetch resolves. The render below falls back to the row's own
+    // `skippedJson`/`actionsJson` while `detail` is null, and shows "loading
+    // judgment…" rather than a stale one.
+    setDetail(null);
+    if (!openId) return;
     let cancelled = false;
     api
       .tick(openId)
@@ -279,7 +299,22 @@ function TicksTab() {
 
 // ---------- Decisions ----------
 
-const DECISION_KINDS = ['', 'chat', 'judgment', 'classification', 'extraction', 'briefing', 'seal'];
+// Stored `ai_decisions.kind` values (packages/shared/src/constants.ts's
+// COST_CATEGORY_BY_KIND keys — chat records as 'chat_turn', not 'chat'; the
+// old list here offered 'chat' and always returned empty, and was missing
+// resolution/distill/fetch entirely).
+const DECISION_KINDS: { value: string; label: string }[] = [
+  { value: '', label: 'all kinds' },
+  { value: 'chat_turn', label: 'chat' },
+  { value: 'judgment', label: 'judgment' },
+  { value: 'classification', label: 'classification' },
+  { value: 'extraction', label: 'extraction' },
+  { value: 'briefing', label: 'briefing' },
+  { value: 'resolution', label: 'resolution' },
+  { value: 'seal', label: 'seal' },
+  { value: 'distill', label: 'distill' },
+  { value: 'fetch', label: 'fetch' },
+];
 
 function DecisionsTab() {
   const [decisions, setDecisions] = useState<AiDecision[]>([]);
@@ -327,8 +362,8 @@ function DecisionsTab() {
       <div className="filter-row">
         <select value={kind} onChange={(e) => setKind(e.target.value)}>
           {DECISION_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k || 'all kinds'}
+            <option key={k.value} value={k.value}>
+              {k.label}
             </option>
           ))}
         </select>

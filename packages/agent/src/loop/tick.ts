@@ -29,7 +29,7 @@ import {
 import type { MacNotifier } from './notify-macos.js';
 import { applyRulesFilter } from './rules-filter.js';
 import type { ResponseTracker } from './response-tracker.js';
-import { isActiveDay, isQuietHours, isWithinWorkingHours } from './time.js';
+import { dueDateInstant, isActiveDay, isQuietHours, isWithinWorkingHours } from './time.js';
 
 /** One tick of the proactive loop — docs/specs/loop.md steps 1-11. */
 
@@ -59,16 +59,22 @@ export async function runTick(
   // written when entering the off window; subsequent skips are silent.
   const hb = deps.config.heartbeat();
   if (!manual && !isWithinWorkingHours(now, hb)) {
+    // isWithinWorkingHours folds in the active-day check, so the reason is
+    // disambiguated here — otherwise 'inactive_day' is never reachable and a
+    // weekend skip is indistinguishable from a 3am one in the tick log.
+    const timing = isActiveDay(now, hb.activeDays) ? 'off_hours' : 'inactive_day';
     const last = db.listTicks(1)[0];
-    if (last?.skippedJson?.includes('"timing":"off_hours"')) return last.id;
+    if (last?.skippedJson?.includes(`"timing":"${timing}"`)) return last.id;
     console.log(
-      `[loop] outside working hours (${hb.workingHours.start}-${hb.workingHours.end}) — ticks paused until the window reopens`,
+      timing === 'inactive_day'
+        ? `[loop] not an active day (${hb.activeDays.join(',')}) — ticks paused until the next active day`
+        : `[loop] outside working hours (${hb.workingHours.start}-${hb.workingHours.end}) — ticks paused until the window reopens`,
     );
     const off = db.insertTickLog(opts.trigger);
     const done = db.finishTickLog(off.id, {
       candidatesIn: 0,
       candidatesAfterRules: 0,
-      skippedJson: JSON.stringify({ timing: 'off_hours' }),
+      skippedJson: JSON.stringify({ timing }),
     });
     bus.broadcast({ type: 'tick.completed', payload: { tick: done } });
     return done.id;
@@ -85,11 +91,8 @@ export async function runTick(
   try {
     // 2. timing gates (manual run-now bypasses them)
     if (!manual) {
-      const reason = isQuietHours(now, hb.quietHours)
-        ? 'quiet_hours'
-        : !isActiveDay(now, hb.activeDays)
-          ? 'inactive_day'
-          : null;
+      // Active-day and working-hours skips already returned at step 0.
+      const reason = isQuietHours(now, hb.quietHours) ? 'quiet_hours' : null;
       if (reason) {
         return finish({
           candidatesIn: 0,
@@ -137,6 +140,9 @@ export async function runTick(
       {
         lastUserChatAt: tracker.lastUserMessageAt(),
         mutedUntil,
+        // A user-triggered run-now is an explicit request: it waives quiet
+        // hours and the user-active gate (never the hard cap or a mute).
+        runNow: manual,
       },
     );
 
@@ -196,7 +202,9 @@ export async function runTick(
     const validTaskIds = new Set(survivors.map((t) => t.id));
     const dueSoonTaskIds = new Set(
       survivors
-        .filter((t) => t.dueDate !== null && Date.parse(t.dueDate) - Date.parse(now) < 24 * 3_600_000)
+        // dueDateInstant (H2): a date-only dueDate is end-of-LOCAL-day, not
+        // Date.parse's UTC midnight — see loop/time.ts.
+        .filter((t) => t.dueDate !== null && dueDateInstant(t.dueDate) - Date.parse(now) < 24 * 3_600_000)
         .map((t) => t.id),
     );
     const checklistIds = new Set(dueChecklist.map((t) => checklistCandidateId(t)));
@@ -262,6 +270,10 @@ export async function runTick(
     // markCommitmentDelivered already flipped delivered ones out of status
     // 'open', so this only expires what's still open and past the grace
     // period — including due commitments this tick judged worth skipping.
+    // Explicit reminders are usually already swept by the reminder scanner
+    // (loop/reminders.ts sweeps its own kind before every delivery pass, incl.
+    // the boot one); this unscoped sweep is the backstop, not their guard —
+    // ticks are working-hours-gated and can't be relied on for timing.
     db.expireStaleCommitments(now, COMMITMENT_STALE_GRACE_HOURS);
 
     // 11. record + broadcast

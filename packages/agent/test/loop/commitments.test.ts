@@ -6,6 +6,7 @@ import { Db } from '../../src/db/index.js';
 import type { LlmClient, StructuredRequest } from '../../src/llm/types.js';
 import { createMemory } from '../../src/memory/index.js';
 import {
+  buildCommitmentContext,
   commitmentCandidateId,
   eligibleCommitments,
   COMMITMENT_STALE_GRACE_HOURS,
@@ -120,6 +121,27 @@ describe('eligibleCommitments', () => {
     expect(eligible).toHaveLength(2);
   });
 
+  it("H10a: delivered EXPLICIT reminders don't spend the inferred budget", () => {
+    const db = new Db(':memory:');
+    const now = '2026-07-09T12:00:00.000Z';
+    // three reminders the user explicitly asked for, all delivered on time today
+    for (let i = 0; i < 3; i++) {
+      const r = db.insertCommitment({
+        description: `remind me #${i}`,
+        dueAt: '2026-07-09T06:00:00.000Z',
+        kind: 'explicit',
+      });
+      db.markCommitmentDelivered(r.id, '2026-07-09T06:00:00.000Z');
+    }
+    const inferred = insertCommitmentAt(db, {
+      description: 'due inferred follow-up',
+      dueAt: '2026-07-09T01:00:00.000Z',
+      createdAt: '2026-07-09T00:00:00.000Z',
+    });
+    const eligible = eligibleCommitments(db, now, { minAgeMin: 30, maxPerDay: 3 });
+    expect(eligible.map((c) => c.id)).toEqual([inferred.id]);
+  });
+
   it('remaining budget accounts for deliveries already made in the trailing 24h', () => {
     const db = new Db(':memory:');
     const now = '2026-07-09T12:00:00.000Z';
@@ -132,6 +154,23 @@ describe('eligibleCommitments', () => {
     });
     const eligible = eligibleCommitments(db, now, { minAgeMin: 30, maxPerDay: 1 });
     expect(eligible).toEqual([]); // budget already spent
+  });
+});
+
+// H1 (2026-08-21 investigation): a bare UTC `due:` line here could get echoed
+// verbatim into a user-facing notify message by judgment.
+describe('buildCommitmentContext', () => {
+  it('renders `due:` as LOCAL wall-clock with numeric offset, not a bare UTC instant', () => {
+    const db = new Db(':memory:');
+    const c = insertCommitmentAt(db, {
+      description: 'call the vet',
+      dueAt: '2026-08-16T01:17:00.000Z',
+      createdAt: '2026-08-15T00:00:00.000Z',
+    });
+    const tz = 'America/Argentina/Buenos_Aires';
+    const context = buildCommitmentContext([c], tz);
+    expect(context).toContain('due: 2026-08-15T22:17:00-03:00');
+    expect(context).not.toContain('due: 2026-08-16T01:17:00.000Z');
   });
 });
 

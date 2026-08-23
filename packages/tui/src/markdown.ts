@@ -1,5 +1,6 @@
 import { Marked } from 'marked';
 import { markedTerminal } from 'marked-terminal';
+import { sanitizeTerminalText } from './sanitize.js';
 
 // Single-entry cache: transcript items render once at the then-current width,
 // so older widths are never reused — no point keeping an instance per width.
@@ -12,10 +13,11 @@ export function renderMarkdown(source: string, columns: number): string {
     cached = { width, m: new Marked(markedTerminal({ width, reflowText: true, tab: 2 })) };
   }
   const m = cached.m;
+  const clean = sanitizeTerminalText(source);
   try {
-    const out = m.parse(source, { async: false }) as string;
+    const out = m.parse(clean, { async: false }) as string;
     return out.replace(/\s+$/, '');
   } catch {
-    return source; // never let a rendering edge case eat the message
+    return clean; // never let a rendering edge case eat the message
   }
 }

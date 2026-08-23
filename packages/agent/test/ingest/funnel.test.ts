@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { StructuredRequest } from '../../src/llm/types.js';
 import type { LlmClient } from '../../src/llm/types.js';
+import { defaultTimeZone, formatLocalIsoWithOffsetAndWeekday } from '../../src/chat/commitments.js';
 import { processEvent, retryErroredEvents } from '../../src/ingest/funnel.js';
 import { makeEvent, makeHarness, outcomeInRawLog } from './helpers.js';
 
@@ -332,5 +333,309 @@ describe('funnel', () => {
     expect(decisions).toHaveLength(1);
     expect(decisions[0]!.rationale).toBe('cheaper');
     expect(h.db.ftsSearch('option').some((hit) => hit.kind === 'decision')).toBe(true);
+  });
+
+  // H4a (2026-08-21 report): a nag about the SAME item, worded differently,
+  // used to fork a sibling task — near-dup matching skips same-source by
+  // design, and the ref-suffix loop only recognizes a byte-identical re-send.
+  it('H4a: a re-worded follow-up in the thread bumps the open task instead of forking T-1001#2', async () => {
+    const h = makeHarness();
+    expect(
+      await processEvent(
+        h.ctx,
+        makeEvent({ threadRef: 'T-1001', text: 'Can you review the fraud-rules PR #482 before EOD?' }),
+      ),
+    ).toBe('EXTRACTED');
+    const original = h.db.listTasks()[0]!;
+    h.db.recordSurface(original.id); // botty already nudged about it once
+    expect(h.db.getTask(original.id)!.surfaceCount).toBe(1);
+
+    const followUp = makeEvent({
+      externalId: 'slack-nag',
+      threadRef: 'T-1001',
+      text: 'asap: el release está frenado por el PR #482 — ¿estado?',
+    });
+    expect(await processEvent(h.ctx, followUp)).toBe('EXTRACTED');
+
+    const tasks = h.db.listTasks();
+    expect(tasks).toHaveLength(1); // no T-1001#2 sibling
+    expect(tasks[0]!.id).toBe(original.id);
+    expect(tasks[0]!.sourceRef).toBe('T-1001');
+    // re-surfaced: a human asked again, so cooldown/hard-cap state is cleared
+    expect(tasks[0]!.surfaceCount).toBe(0);
+    expect(tasks[0]!.lastSurfacedAt).toBeNull();
+    // the follow-up text is kept as evidence on the task
+    const evidence = h.db.taskHistory(original.id).filter((r) => r.field === 'evidence');
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]!.newValue).toContain('el release está frenado');
+    // ...and the Inspector can see the bump
+    const body = JSON.parse(
+      h.db.listRawLog().find((r) => r.externalId === 'slack-nag')!.body,
+    ) as { meta: { funnelDetail?: { bumped?: number } } };
+    expect(body.meta.funnelDetail?.bumped).toBe(1);
+  });
+
+  it('H4a: a follow-up about a DIFFERENT PR in the same thread still gets its own task', async () => {
+    const h = makeHarness();
+    await processEvent(
+      h.ctx,
+      makeEvent({ threadRef: 'T-1001', text: 'Can you review the fraud-rules PR #482 before EOD?' }),
+    );
+    expect(
+      await processEvent(
+        h.ctx,
+        makeEvent({ threadRef: 'T-1001', text: 'Can you review the fraud-rules PR #483 before EOD?' }),
+      ),
+    ).toBe('EXTRACTED');
+
+    const tasks = h.db.listTasks();
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map((t) => t.sourceRef).sort()).toEqual(['T-1001', 'T-1001#2']);
+  });
+
+  // H4b: whichever event won the race used to define the task forever.
+  it('H4b: cross-source dedup merges the ask\'s requester, due date and priority into the survivor', async () => {
+    const h = makeHarness((base) =>
+      overrideStructured(base, (req) => {
+        if (req.task === 'classification') return { worthExtracting: true, confidence: 1, reason: 'ok' };
+        if (req.task === 'extraction') {
+          return {
+            tasks: [
+              {
+                description: 'Review the fraud-rules PR #482',
+                requesterName: 'Marian',
+                dueDate: '2026-08-21',
+                priority: 1,
+              },
+            ],
+            decisions: [],
+            people: [],
+          };
+        }
+        return undefined;
+      }),
+    );
+
+    // the GitHub upsert wins the race: no requester, no due date, P2
+    await processEvent(
+      h.ctx,
+      makeEvent({
+        source: 'github',
+        kind: 'pr',
+        externalId: 'gh-482',
+        actor: { displayName: 'github-actions' },
+        text: 'Review requested: acme-example/fraud-rules#482',
+        meta: { repo: 'acme-example/fraud-rules', number: 482, state: 'open' },
+      }),
+    );
+    const survivor = h.db.listTasks()[0]!;
+    expect(survivor.requestedBy).toBeNull();
+    expect(survivor.dueDate).toBeNull();
+    expect(survivor.priority).toBe(2);
+
+    // Marian's Slack ask lands second and dedups INTO it — carrying its metadata
+    expect(
+      await processEvent(
+        h.ctx,
+        makeEvent({ threadRef: 'T-1001', text: 'can you review the fraud-rules PR #482 before EOD?' }),
+      ),
+    ).toBe('DEDUPED');
+
+    expect(h.db.listTasks()).toHaveLength(1);
+    const merged = h.db.getTask(survivor.id)!;
+    expect(merged.requestedBy).toBe(h.db.getPersonByName('Marian')!.id);
+    expect(merged.dueDate).toBe('2026-08-21');
+    expect(merged.priority).toBe(1);
+  });
+
+  it('H4b: a merge never downgrades priority or pushes a due date later', async () => {
+    let extracted: unknown;
+    const h = makeHarness((base) =>
+      overrideStructured(base, (req) => {
+        if (req.task === 'classification') return { worthExtracting: true, confidence: 1, reason: 'ok' };
+        if (req.task === 'extraction') return extracted;
+        return undefined;
+      }),
+    );
+
+    extracted = {
+      tasks: [
+        {
+          description: 'Rotate the production API keys',
+          requesterName: 'Marian',
+          dueDate: '2026-08-21',
+          priority: 1,
+        },
+      ],
+      decisions: [],
+      people: [],
+    };
+    await processEvent(h.ctx, makeEvent({ threadRef: 'T-KEYS', text: 'can you rotate the keys please?' }));
+    const task = h.db.listTasks()[0]!;
+
+    // A weaker restatement of the same ask arrives from another source.
+    extracted = {
+      tasks: [
+        {
+          description: 'Rotate the production API keys',
+          requesterName: 'Rai',
+          dueDate: '2026-09-30',
+          priority: 3,
+        },
+      ],
+      decisions: [],
+      people: [],
+    };
+    await processEvent(
+      h.ctx,
+      makeEvent({ source: 'gmail', kind: 'email', actor: { email: 'marian@acme.example' }, text: 'can you rotate the production API keys please?' }),
+    );
+
+    const after = h.db.getTask(task.id)!;
+    expect(h.db.listTasks()).toHaveLength(1);
+    expect(after.priority).toBe(1); // not downgraded to 3
+    expect(after.dueDate).toBe('2026-08-21'); // not pushed out to September
+    expect(after.requestedBy).toBe(task.requestedBy); // requester not re-attributed
+  });
+
+  it('canonicalizes an extractor full name to the roster entry instead of minting a tier-2 twin', async () => {
+    const h = makeHarness((base) =>
+      overrideStructured(base, (req) => {
+        if (req.task === 'classification') return { worthExtracting: true, confidence: 1, reason: 'ok' };
+        if (req.task === 'extraction') {
+          return {
+            tasks: [{ description: 'Send the Q2 chargeback deck', requesterName: 'Marian Gutiérrez' }],
+            decisions: [],
+            people: [{ name: 'Marian Gutiérrez' }],
+          };
+        }
+        return undefined;
+      }),
+    );
+
+    await processEvent(h.ctx, makeEvent({ text: 'can you send the Q2 chargeback deck?' }));
+
+    const marian = h.db.getPersonByName('Marian')!;
+    const task = h.db.listTasks()[0]!;
+    expect(task.requestedBy).toBe(marian.id);
+    expect(task.priority).toBe(1); // still a Tier-1 ask, not demoted to P2
+    expect(h.db.getPersonByName('Marian Gutiérrez')).toBeUndefined();
+    expect(h.db.listPeople()).toHaveLength(2); // Marian + Rai only — no phantom
+  });
+
+  it('clamps an out-of-range extractor priority and drops an unparseable dueDate', async () => {
+    const h = makeHarness((base) =>
+      overrideStructured(base, (req) => {
+        if (req.task === 'classification') return { worthExtracting: true, confidence: 1, reason: 'ok' };
+        if (req.task === 'extraction') {
+          return {
+            tasks: [{ description: 'Ship the report', priority: 7, dueDate: 'tomorrow' }],
+            decisions: [],
+            people: [],
+          };
+        }
+        return undefined;
+      }),
+    );
+
+    const event = makeEvent({ externalId: 'bad-values', text: 'please ship the report' });
+    expect(await processEvent(h.ctx, event)).toBe('EXTRACTED');
+
+    const task = h.db.listTasks()[0]!;
+    expect(task.priority).toBe(3); // clamped to the 1|2|3 scale, not stored as 7
+    expect(task.dueDate).toBeNull(); // "tomorrow" is not a date
+
+    const body = JSON.parse(
+      h.db.listRawLog().find((r) => r.externalId === 'bad-values')!.body,
+    ) as { meta: { funnelDetail?: { invalid?: { field: string; value: unknown }[] } } };
+    expect(body.meta.funnelDetail?.invalid).toEqual(
+      expect.arrayContaining([
+        { field: 'dueDate', value: 'tomorrow' },
+        { field: 'priority', value: 7, kept: 3 },
+      ]),
+    );
+  });
+
+  it('keeps a well-formed dueDate (date-only and ISO instant both pass validation)', async () => {
+    let due = '2026-08-21';
+    const h = makeHarness((base) =>
+      overrideStructured(base, (req) => {
+        if (req.task === 'classification') return { worthExtracting: true, confidence: 1, reason: 'ok' };
+        if (req.task === 'extraction') {
+          return { tasks: [{ description: `Ship the report ${due}`, dueDate: due }], decisions: [], people: [] };
+        }
+        return undefined;
+      }),
+    );
+
+    await processEvent(h.ctx, makeEvent({ threadRef: 'D-1', text: 'please ship the report' }));
+    due = '2026-08-22T18:00:00.000Z';
+    await processEvent(h.ctx, makeEvent({ threadRef: 'D-2', text: 'please ship the other report' }));
+
+    expect(h.db.listTasks().map((t) => t.dueDate).sort()).toEqual([
+      '2026-08-21',
+      '2026-08-22T18:00:00.000Z',
+    ]);
+  });
+
+  it('automated senders (noreply / billing / bots) never become discovered people', async () => {
+    const h = makeHarness();
+    const senders = [
+      { email: 'noreply@github.example', displayName: 'GitHub' },
+      { email: 'billing@aws-billing.example', displayName: 'AWS Billing' },
+      { email: 'notifications+kd83@acme.example' },
+      { email: 'mailer-daemon@acme.example' },
+      { handle: '@dependabot[bot]' },
+    ];
+    for (const actor of senders) {
+      expect(
+        await processEvent(h.ctx, makeEvent({ source: 'gmail', kind: 'email', actor, text: 'can you pay this invoice?' })),
+      ).toBe('INTERACTION_ONLY');
+    }
+
+    expect(h.db.listPeople().map((p) => p.name).sort()).toEqual(['Marian', 'Rai']);
+    // the interaction rows are still logged, just with no person attached
+    const rows = h.db.raw.prepare('SELECT person_id FROM interactions').all() as { person_id: string | null }[];
+    expect(rows).toHaveLength(senders.length);
+    expect(rows.every((r) => r.person_id === null)).toBe(true);
+
+    // ...while a real unknown human is still discovered
+    await processEvent(
+      h.ctx,
+      makeEvent({ source: 'gmail', kind: 'email', actor: { email: 'sofi@acme.example', displayName: 'Sofi' }, text: 'can you check this?' }),
+    );
+    expect(h.db.getPersonByName('Sofi')).toBeDefined();
+  });
+
+  // H1 (2026-08-21 investigation): OCCURRED_AT used to be a bare UTC instant,
+  // so the extractor read "tomorrow"/"hoy" in the message against the wrong
+  // calendar day for negative-offset users. It must now be local wall-clock
+  // with a numeric offset + weekday (see chat/commitments.ts
+  // formatLocalIsoWithOffsetAndWeekday), and never a bare "...Z" instant.
+  it('OCCURRED_AT in the classifier/extractor prompts is LOCAL time with offset + weekday, not bare UTC', async () => {
+    const prompts: string[] = [];
+    const h = makeHarness((base) =>
+      overrideStructured(base, (req) => {
+        prompts.push(req.prompt);
+        return undefined; // fall through to the mock's default behavior
+      }),
+    );
+    const event = makeEvent({
+      externalId: 'occurred-at-1',
+      text: 'can you review this?',
+      occurredAt: '2026-08-16T01:17:00.000Z', // 2026-08-15T22:17:00-03:00 in Buenos Aires
+    });
+
+    await processEvent(h.ctx, event);
+
+    expect(prompts.length).toBeGreaterThan(0);
+    const expectedLine = `OCCURRED_AT: ${formatLocalIsoWithOffsetAndWeekday(event.occurredAt, defaultTimeZone())}`;
+    for (const prompt of prompts) {
+      const occurredLine = prompt.split('\n').find((l) => l.startsWith('OCCURRED_AT:'));
+      expect(occurredLine).toBeDefined();
+      expect(occurredLine).not.toBe('OCCURRED_AT: 2026-08-16T01:17:00.000Z'); // not the bare Z instant
+      expect(occurredLine).toMatch(/^OCCURRED_AT: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} \(\w+\)$/);
+      expect(occurredLine).toBe(expectedLine);
+    }
   });
 });

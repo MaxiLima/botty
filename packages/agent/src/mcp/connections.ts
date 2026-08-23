@@ -27,8 +27,14 @@ export type McpCallResult =
 export type McpTransportFactory = (server: string, cfg: McpServerConfig) => Transport;
 
 export interface McpConnections {
-  /** tools/list for one server. Lazy-connects if needed. Throws a readable Error on failure. */
-  listTools(server: string): Promise<McpToolInfo[]>;
+  /**
+   * tools/list for one server. Lazy-connects if needed. Throws a readable
+   * Error on failure. `timeoutMs` bounds the tools/list request itself
+   * (default LIST_TOOLS_TIMEOUT_MS) — short by design: this runs on every
+   * chat turn (mcp/tools.ts) and an unreachable server must not stall the
+   * turn for anywhere near the MCP SDK's 60s default request timeout.
+   */
+  listTools(server: string, opts?: { timeoutMs?: number }): Promise<McpToolInfo[]>;
   /** tools/call for one server/tool. Lazy-connects if needed. Never throws — failures come back as `{ error }`. */
   callTool(
     server: string,
@@ -43,7 +49,31 @@ export interface McpConnections {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** Bounds client.connect() itself (spawn + handshake) — a hung/unreachable server
+ * must fail fast, not stall the caller for however long the subprocess never comes up. */
+const CONNECT_TIMEOUT_MS = 10_000;
+/** Bounds tools/list — short because this runs on every chat turn (mcp/tools.ts)
+ * to pick up hot mcp.json reloads; a slow/dead server shouldn't eat the MCP SDK's
+ * full 60s default request timeout on every single turn. */
+const LIST_TOOLS_TIMEOUT_MS = 10_000;
 const CLIENT_INFO = { name: 'botty', version: '0.1.0' };
+
+/** Race `p` against a timeout; rejects with a readable Error, never leaves a dangling timer. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 function defaultTransportFactory(_server: string, cfg: McpServerConfig): Transport {
   return new StdioClientTransport({
@@ -73,8 +103,11 @@ function configKeyFor(cfg: McpServerConfig): string {
 export function createMcpConnections(deps: {
   getConfig: () => McpConfig;
   transportFactory?: McpTransportFactory;
+  /** Override the connect() timeout — for tests; production uses CONNECT_TIMEOUT_MS. */
+  connectTimeoutMs?: number;
 }): McpConnections {
   const transportFactory = deps.transportFactory ?? defaultTransportFactory;
+  const connectTimeoutMs = deps.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   const connections = new Map<string, ConnectionEntry>();
   const connecting = new Map<string, Promise<Client>>();
 
@@ -102,10 +135,24 @@ export function createMcpConnections(deps: {
 
     const attempt = (async (): Promise<Client> => {
       const client = new Client(CLIENT_INFO);
+      // A crashed/exited external server must not stay cached as a dead client
+      // until the agent restarts — evict it here so the NEXT call reconnects
+      // fresh. Guarded against a STALE close event: if this client was already
+      // replaced by a newer reconnect by the time its close fires, the map no
+      // longer points at it and eviction is a no-op (closeEntry is itself
+      // idempotent for the same reason).
+      const evictIfCurrent = () => {
+        if (connections.get(server)?.client === client) void closeEntry(server);
+      };
+      client.onclose = evictIfCurrent;
+      client.onerror = evictIfCurrent;
       try {
         const transport = transportFactory(server, cfg);
-        await client.connect(transport);
+        await withTimeout(client.connect(transport), connectTimeoutMs, `mcp server "${server}" connect`);
       } catch (err) {
+        // Best-effort: don't leave a half-connected subprocess/transport behind
+        // just because we gave up waiting on it.
+        void client.close().catch(() => {});
         throw new Error(`mcp server "${server}" failed to connect: ${(err as Error).message}`);
       }
       connections.set(server, { client, configKey: key });
@@ -120,9 +167,9 @@ export function createMcpConnections(deps: {
   }
 
   return {
-    async listTools(server) {
+    async listTools(server, opts) {
       const client = await connect(server);
-      const res = await client.listTools();
+      const res = await client.listTools(undefined, { timeout: opts?.timeoutMs ?? LIST_TOOLS_TIMEOUT_MS });
       return res.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
     },
 

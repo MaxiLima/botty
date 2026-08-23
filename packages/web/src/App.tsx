@@ -1,6 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { navigate, useRoute, type Page } from './lib/router.js';
-import { startWs, useWsStatus } from './lib/ws.js';
+import { startWs, useOnReconnect, useWsStatus } from './lib/ws.js';
+import { api } from './lib/api.js';
+import { scheduleHint, type ScheduleInfo } from './lib/format.js';
 import {
   dismissOnboardingBanner,
   initStores,
@@ -51,6 +53,39 @@ export function App() {
   const onboarded = useOnboarded();
   const bannerDismissed = useOnboardingBannerDismissed();
   useStoreRefetchOnReconnect();
+
+  // Off-hours/quiet-hours/inactive-day indicator (TUI has `◔ quiet 22:00-08:00`
+  // in its statusline; the web app had no equivalent, so proactive silence by
+  // design looked indistinguishable from "broken"). No push event for this —
+  // poll occasionally so it tracks day/hour boundaries as they pass, same as
+  // the TUI's refreshSchedule.
+  const [schedule, setSchedule] = useState<ScheduleInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const refreshSchedule = () => {
+      api
+        .health()
+        .then((h) => {
+          if (!cancelled) setSchedule(h.schedule ?? null);
+        })
+        .catch(() => {
+          // agent unreachable — leave the last-known hint up rather than flicker it away
+        });
+    };
+    refreshSchedule();
+    const t = setInterval(refreshSchedule, 5 * 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+  useOnReconnect(() => {
+    api
+      .health()
+      .then((h) => setSchedule(h.schedule ?? null))
+      .catch(() => {});
+  });
+  const hint = scheduleHint(schedule);
 
   // Ctrl/Cmd+1..5 page switching.
   useEffect(() => {
@@ -106,6 +141,11 @@ export function App() {
           <span className="ws-label">
             {wsStatus === 'open' ? 'connected' : wsStatus === 'connecting' ? 'connecting…' : 'offline'}
           </span>
+          {hint && (
+            <span className="schedule-hint" title="botty's proactive loop is quiet right now — chat still works">
+              ◔ {hint}
+            </span>
+          )}
         </div>
       </aside>
       <main className="page-main">

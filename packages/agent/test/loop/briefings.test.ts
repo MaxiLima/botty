@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import {
+  defaultTimeZone,
+  formatLocalIsoWithOffset,
+  formatLocalIsoWithOffsetAndWeekday,
+} from '../../src/chat/commitments.js';
 import { Db } from '../../src/db/index.js';
 import { BRIEFING_SYSTEM, buildBriefingPrompt } from '../../src/loop/briefings.js';
 
@@ -62,5 +67,26 @@ describe('buildBriefingPrompt', () => {
     // Number of open/close markers matches the number of ingested sections (4).
     expect(prompt.split(UNTRUSTED_OPEN)).toHaveLength(5); // split → 4 markers + leading chunk
     expect(prompt.split(UNTRUSTED_CLOSE)).toHaveLength(5);
+  });
+
+  // H1 (2026-08-21 investigation): a bare UTC startAt/Current-time line made the
+  // morning brief headline a 23:47-local meeting as "Sprint planning at 02:47".
+  // startOfLocalDay's day-window math (buildBriefingPrompt above) runs off the
+  // PROCESS zone, so this keeps `startAt` within an hour of `now` (well inside
+  // the same local day under any real-world zone) and checks formatting against
+  // defaultTimeZone() — the single source of truth every prompt builder uses.
+  it('renders calendar times and "Current time" as LOCAL wall-clock with offset + weekday, not bare UTC', () => {
+    const db = new Db(':memory:');
+    const now = '2026-08-15T08:00:00.000Z';
+    const startAt = '2026-08-15T09:00:00.000Z';
+    db.upsertCalendarEvent({ externalId: 'evt-tz', title: 'Sprint planning', startAt });
+
+    const tz = defaultTimeZone();
+    const prompt = buildBriefingPrompt(db, 'morning_brief', now);
+
+    expect(prompt).toContain(`Current time: ${formatLocalIsoWithOffsetAndWeekday(now, tz)}`);
+    expect(prompt).not.toContain(`Current time: ${now}`);
+    expect(prompt).toContain(`${formatLocalIsoWithOffset(startAt, tz)} — Sprint planning`);
+    expect(prompt).not.toContain(startAt);
   });
 });

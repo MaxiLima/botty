@@ -46,6 +46,52 @@ interface Check {
   detail: string;
 }
 
+/**
+ * Which LLM auth path is actually in effect, pure for tests. Mirrors
+ * `childEnv()` in procs.ts: when spawning from inside a Claude Code session
+ * (`CLAUDECODE` set), the session's scoped `ANTHROPIC_API_KEY`/`AUTH_TOKEN`
+ * are stripped from the spawned agent so the SDK falls back to the ambient
+ * Claude Code login — reporting "ANTHROPIC_* env var set" in that situation
+ * is misleading, since that key is never handed to the agent, *and* even a
+ * deliberately-exported key (outside a session) disables the claude.ai
+ * connectors real-mode Gmail/Calendar ingest depends on.
+ */
+export function llmAuthCheck(env: NodeJS.ProcessEnv, hasClaudeLogin: boolean): { state: Check['state']; detail: string } {
+  const claudeCodeSession = Boolean(env.CLAUDECODE);
+  const rawApiKey = Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN);
+
+  if (rawApiKey && !claudeCodeSession) {
+    return {
+      state: 'warn',
+      detail:
+        'ANTHROPIC_API_KEY/AUTH_TOKEN set and will be used for LLM auth — API-key auth disables the claude.ai ' +
+        'connectors real mode\'s Gmail/Calendar ingest depends on. Use a Claude Code login for real mode instead.',
+    };
+  }
+  if (rawApiKey && claudeCodeSession) {
+    return hasClaudeLogin
+      ? {
+          state: 'ok',
+          detail:
+            'inside a Claude Code shell — its scoped ANTHROPIC_API_KEY is stripped from the spawned agent ' +
+            '(procs.childEnv); the Claude Code login is used instead, so claude.ai connectors stay usable',
+        }
+      : {
+          state: 'warn',
+          detail:
+            'inside a Claude Code shell (its ANTHROPIC_API_KEY is stripped from the spawned agent) but no Claude ' +
+            'Code login found — real-LLM calls will fail (BOTTY_MOCK_LLM=1 unaffected)',
+        };
+  }
+  if (hasClaudeLogin) {
+    return { state: 'ok', detail: 'Claude Code login detected — the Agent SDK resolves it ambiently' };
+  }
+  return {
+    state: 'warn',
+    detail: 'no ANTHROPIC_* env var and no Claude Code login found — real-LLM calls will fail (BOTTY_MOCK_LLM=1 unaffected)',
+  };
+}
+
 /** Importable Claude Code stdio servers whose (sanitized) key is absent from botty's mcp.json. */
 function countUnimportedClaudeServers(cfg: CliConfig): number {
   const d = discoverClaudeServers(readClaudeFiles(os.homedir(), process.cwd()));
@@ -119,17 +165,8 @@ export async function doctor(cfg: CliConfig): Promise<void> {
     });
   }
 
-  const hasAuthEnv = Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
   const hasClaudeLogin = fs.existsSync(path.join(os.homedir(), '.claude.json')) || fs.existsSync(path.join(os.homedir(), '.claude'));
-  checks.push({
-    label: 'llm auth',
-    state: hasAuthEnv || hasClaudeLogin ? 'ok' : 'warn',
-    detail: hasAuthEnv
-      ? 'ANTHROPIC_* env var set'
-      : hasClaudeLogin
-        ? 'Claude Code login detected — the Agent SDK resolves it ambiently'
-        : 'no ANTHROPIC_* env var and no Claude Code login found — real-LLM calls will fail (BOTTY_MOCK_LLM=1 unaffected)',
-  });
+  checks.push({ label: 'llm auth', ...llmAuthCheck(process.env, hasClaudeLogin) });
 
   // Passive nudge only — emitted when Claude Code has importable MCP servers
   // botty doesn't know about; discovery failures must never break doctor.

@@ -6,6 +6,52 @@ images/quoting, proactive loop, working-hours hard gate, Botty-branded notificat
 checklist tasks, config knob promotion + last-known-good, loop guards — see the ports
 section below).
 
+- **Findings — 2026-08-21 full test run** (`docs/reports/2026-08-21-full-test-run.md`): complete
+  pass — unit suites, new `npm run e2e` regression net, mock + real-LLM isolated instances, web/TUI/CLI
+  drives, five code reviews. 12 HIGH findings headlined by the UTC-vs-local date family (extractor
+  and loop prompts get bare `Z` instants; web/TUI render date-only due dates a day early in UTC-3),
+  snoozed tasks never re-surfacing, same-thread follow-ups forking tasks + dedup dropping requester/
+  due, real-mode Gmail silently dropping >30 msgs/poll, localhost-origin command execution via
+  `mcp-probe`, prompt budget clipping the Tools block, nudge-button responses never recorded,
+  meeting-prep tasks never closing, reminders eating the commitment budget / firing days late,
+  web duplicate turns on foreign adoption, costs ignoring cache tokens. Prioritized "genuine
+  assistant" list in §5 of the report.
+  - **10 of the 12 HIGH findings fixed 2026-08-22** (§7 "Fix log" in the report): the whole
+    UTC-vs-local family (H1/H2 — one clock in every prompt, date-only = end of local day in
+    agent, web and TUI), snooze expiry re-candidating (H3, new `SNOOZE_EXPIRED` reason),
+    gmail oldest-first paging with a safe watermark (H5), port-scoped Origin + WS Host guard +
+    anti-framing headers (H6), a prompt budget that can't drop the Tools block or cut a task id
+    (H7), nudge buttons recording their response (H8), meeting-prep tasks that close and honour
+    calendar cancellations (H9), web chat turn reconciliation (H11), and cache-token/`total_cost_usd`
+    cost accounting behind migration 008 (H12). Root typecheck clean, `npm test` 870 passing
+    (+125 tests), `npm run e2e` 9/9.
+  - **Pass 2, 2026-08-23** (§8 "Fix log" in the report): the last two HIGH findings plus 26
+    MEDIUM and 20 LOW — **48 findings**, nine file-partitioned subagents. H4 (a nag in the same
+    thread bumps its task instead of forking `T-1001#2`; dedup merges requester/due/priority into
+    the survivor) and H10 (explicit reminders no longer eat the inferred budget; the reminder scan
+    sweeps stale reminders before delivering, and a late delivery says "(was due Fri 18:07)").
+    MEDIUM sweep: all 7 loop findings (end-inclusive briefing gate, interval clamps against
+    `setTimeout` overflow, duplicate-action dedup, run-now waivers, sticky judgment skip,
+    heartbeat-autosave tick starvation, `Z`-canonical instants), 8 of 9 ingestion (roster
+    canonicalization, extractor validation, case-insensitive handles, jira/github reopen +
+    assignee gate, bot senders, bilingual heuristics), all 7 chat/MCP (partial replies survive
+    interrupt, dead-client eviction, tool-name collisions, discovery timeouts, untrusted markers
+    around tasks/team/tool results, Spanish commitment gate, `team.md` last-known-good), 5 of 7
+    API/DB (settings *value* validation, `queryInt` bounds, mute validation, process-level error
+    handlers, WS ping + backpressure) and all 4 client ones. Root typecheck clean, `npm test`
+    **1163 passing** (+293 tests), `npm run e2e` 9/9.
+  - **Still open from the report**: retention for `ai_decisions`/`source_check_log` and the
+    swallowed identical re-send (MEDIUM); seven LOW items; six items deferred because they need a
+    migration against the frozen schema (calendar RSVP, per-instance recurrence, a `truncated`
+    column on `source_check_log`, a durable sticky-skip memo, `tasks.updated` for closed boards,
+    pagination on `/api/tasks` and `/api/people/:id`); and two product calls left to the owner —
+    whether a tick should run at boot, and whether `POST /chat/message` should return the *user*
+    turn id so web chat can reconcile by id instead of by content. Full list in §8.
+  - **New follow-ups surfaced in pass 2**: `npm audit` reports 6 pre-existing vulnerabilities
+    (4 high, 2 moderate — postcss transitive, `npm audit fix` available); no dependency was added
+    or changed by this work. `scripts/e2e/run.ts`'s gates step was rewritten to assert the new
+    run-now contract (a run-now inside quiet hours keeps its candidates) — a test that changed
+    alongside the code it guards, worth a reviewer's eye.
 - ~~Audit sweep + gap closure~~ **shipped 2026-07-07**: 40-issue audit sweep landed —
   security guards (`server/guards.ts`), WS crash-resilience, funnel ERROR-retry
   (`MAX_EXTRACTION_ATTEMPTS=3`), FTS migration 003, web ErrorBoundary, dependency bumps
@@ -184,16 +230,20 @@ section below).
 
 ## P1 — tests
 
-- **Automated e2e** (`npm run e2e`): script the manual flow — start sim+agent (mock LLM, temp
-  data dir), load workweek, advance, check sources, assert funnel outcome counts, task count,
-  timewarp, tick, assert nudge + gates. This is the regression net.
+- ~~**Automated e2e** (`npm run e2e`)~~ **shipped 2026-08-21**: `scripts/e2e/run.ts` — spawns a
+  throwaway sim+agent (mock LLM, mkdtemp data dir, OS-allocated ports), loads workweek, advances,
+  checks sources, asserts exact funnel outcome counts / task count / owner inversion / dedup, chat
+  `!tool` triggers incl. exact-time reminder delivery, sweep auto-close, rules gates via hot-reload
+  + REST, timewarp restart, backfill, and validates every WS frame against `WsEventSchema`. 9
+  steps, ≈30 s, runs in CI. Not covered (mock limitation): the notify path (mock judgment always
+  skips) — cooldown/min_gap/hourly_cap/hard_cap remain unit-tested only, or need a real LLM.
 - **Web tests**: one logic test exists now (markdown rendering); the original targets — WS
   store (reconnect/refetch), chat state reducers, the nudge action row — still need coverage.
   Prerequisite: a jsdom/RTL harness in `@botty/web` (vitest jsdom environment +
   Testing Library), which doesn't exist yet.
-- **Integration-harness primitive**: a reusable spawn-sim+agent-on-a-temp-data-dir helper
-  (port allocation, mock LLM, teardown). This is the real cost hiding inside the e2e item —
-  build it once and both `npm run e2e` and future integration tests get cheap.
+- ~~**Integration-harness primitive**~~ **shipped 2026-08-21** as `scripts/e2e/harness.ts`
+  (`startInstance()` → free ports, temp dir, fast heartbeat, health-gated boot, `stopAgent` /
+  `restartAgent` / `teardown`; `timewarp()`; `until()` polling).
 - **threadEvents overflow/origin-swap test**: the overflow/origin-swap branch in
   `db/index.ts` is untested — add a targeted test.
 - **Judgment evals**: after ~1 week of real traffic, curate `ai_decisions` judgment rows into a

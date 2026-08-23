@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { processEvent } from '../../src/ingest/funnel.js';
-import { meetingPrepCandidates } from '../../src/ingest/structured.js';
+import { toUtcInstant } from '../../src/ingest/structured.js';
 import { makeEvent, makeHarness, outcomeInRawLog } from './helpers.js';
 
 describe('gcal', () => {
@@ -16,7 +16,7 @@ describe('gcal', () => {
       meta: {
         startAt,
         endAt: new Date(Date.now() + 90 * 60_000).toISOString(),
-        attendees: ['marian@acme.example', 'yo@maxolabs.io'],
+        attendees: ['marian@acme.example', 'yo@acme.example'],
         location: 'Room 3',
       },
     });
@@ -29,7 +29,7 @@ describe('gcal', () => {
     expect(rows[0]!.title).toBe('Sprint planning');
     expect(rows[0]!.startAt).toBe(startAt);
     expect(rows[0]!.location).toBe('Room 3');
-    expect(JSON.parse(rows[0]!.attendees!)).toEqual(['marian@acme.example', 'yo@maxolabs.io']);
+    expect(JSON.parse(rows[0]!.attendees!)).toEqual(['marian@acme.example', 'yo@acme.example']);
     expect(outcomeInRawLog(h.db, 'cal-1')).toBe('UPSERTED');
 
     // re-delivery: raw_log dedup, but the upsert stays idempotent
@@ -37,32 +37,46 @@ describe('gcal', () => {
     expect(h.db.eventsStartingBetween('0000', '9999')).toHaveLength(1);
   });
 
-  it('meetingPrepCandidates: upcoming events with a tier-1 attendee within the lead window', async () => {
+  // Report finding #1 (MEDIUM "Ingestion" / offset-TZ): a real gcal event can
+  // carry an offset like `-03:00` instead of `Z`. start_at/end_at are compared
+  // lexicographically in SQL (eventsStartingBetween), so an un-canonicalized
+  // offset sorts wrong against its Z twin. handleGcal must canonicalize at the
+  // write side.
+  it('canonicalizes an offset start/end instant to UTC Z before storing it', async () => {
     const h = makeHarness();
-    const now = Date.now();
-    const soon = new Date(now + 30 * 60_000).toISOString();
-    const far = new Date(now + 5 * 3_600_000).toISOString();
+    const event = makeEvent({
+      source: 'gcal',
+      kind: 'event',
+      externalId: 'cal-offset-1',
+      actor: {},
+      text: 'Standup',
+      meta: {
+        startAt: '2026-08-22T10:00:00-03:00',
+        endAt: '2026-08-22T10:30:00-03:00',
+      },
+    });
 
-    await processEvent(h.ctx, makeEvent({
-      source: 'gcal', kind: 'event', externalId: 'cal-soon', actor: {},
-      text: '1:1 with Marian',
-      meta: { startAt: soon, attendees: ['marian@acme.example', 'yo@maxolabs.io'] },
-    }));
-    await processEvent(h.ctx, makeEvent({
-      source: 'gcal', kind: 'event', externalId: 'cal-far', actor: {},
-      text: 'Way later sync',
-      meta: { startAt: far, attendees: ['marian@acme.example'] },
-    }));
-    await processEvent(h.ctx, makeEvent({
-      source: 'gcal', kind: 'event', externalId: 'cal-tier2', actor: {},
-      text: 'Coffee with Rai',
-      meta: { startAt: soon, attendees: ['rai@acme.example'] }, // tier 2 only
-    }));
+    expect(await processEvent(h.ctx, event)).toBe('UPSERTED');
+    const rows = h.db.eventsStartingBetween('0000', '9999');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.startAt).toBe('2026-08-22T13:00:00.000Z');
+    expect(rows[0]!.endAt).toBe('2026-08-22T13:30:00.000Z');
 
-    const candidates = meetingPrepCandidates(h.db, { now: new Date(now).toISOString(), leadMin: 60 });
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0]!.event.title).toBe('1:1 with Marian');
-    expect(candidates[0]!.tier1Attendees.map((p) => p.name)).toEqual(['Marian']);
+    // and it now sorts correctly against a Z-form instant for the "same" wall
+    // clock moment — the whole point of canonicalizing at the write side.
+    expect(h.db.eventsStartingBetween('2026-08-22T12:59:00Z', '2026-08-22T13:01:00Z')).toHaveLength(1);
+  });
+
+  it('leaves a date-only string untouched (not our job — see H2 dueDateInstant)', () => {
+    expect(toUtcInstant('2026-08-22')).toBe('2026-08-22');
+  });
+
+  it('passes an unparseable instant through unchanged instead of dropping it', () => {
+    expect(toUtcInstant('not-a-date')).toBe('not-a-date');
+  });
+
+  it('is idempotent on an already-canonical Z instant', () => {
+    expect(toUtcInstant('2026-08-22T13:00:00.000Z')).toBe('2026-08-22T13:00:00.000Z');
   });
 });
 
@@ -122,6 +136,101 @@ describe('jira', () => {
     }));
     expect(h.db.listTasks()).toEqual([]);
   });
+
+  // Report finding #2: "no jira/github reopen ... once done — a reopened
+  // issue leaves the task closed forever."
+  it('reopen: upstream un-closing a funnel-closed task reopens it', async () => {
+    const h = makeHarness();
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-reopen-1', actor: {},
+      text: 'FRAUD-500: tighten velocity rules',
+      meta: { key: 'FRAUD-500', status: 'To Do' },
+    }));
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-reopen-2', actor: {},
+      text: 'FRAUD-500: tighten velocity rules',
+      meta: { key: 'FRAUD-500', status: 'Done' },
+    }));
+    const closed = h.db.getTaskBySourceRef('jira', 'FRAUD-500')!;
+    expect(closed.status).toBe('done');
+
+    // upstream reopens the issue
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-reopen-3', actor: {},
+      text: 'FRAUD-500: tighten velocity rules',
+      meta: { key: 'FRAUD-500', status: 'In Progress' },
+    }));
+    const reopened = h.db.getTaskBySourceRef('jira', 'FRAUD-500')!;
+    expect(reopened.status).toBe('open');
+    expect(reopened.doneAt).toBeNull();
+    expect(h.db.listTasks()).toHaveLength(1); // no second task created
+    const history = h.db.taskHistory(reopened.id);
+    expect(history.filter((r) => r.field === 'status' && r.newValue === 'open').at(-1)?.changedBy).toBe('funnel');
+  });
+
+  it('reopen does NOT override a task the user completed manually', async () => {
+    const h = makeHarness();
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-manual-1', actor: {},
+      text: 'FRAUD-501: tighten velocity rules',
+      meta: { key: 'FRAUD-501', status: 'To Do' },
+    }));
+    const task = h.db.getTaskBySourceRef('jira', 'FRAUD-501')!;
+    h.db.updateTask(task.id, { status: 'done', doneAt: new Date().toISOString() }, 'user');
+
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-manual-2', actor: {},
+      text: 'FRAUD-501: tighten velocity rules',
+      meta: { key: 'FRAUD-501', status: 'In Progress' },
+    }));
+    expect(h.db.getTaskBySourceRef('jira', 'FRAUD-501')!.status).toBe('done');
+  });
+
+  // Report finding #2 (title sync): "a retitled issue keeps the stale title."
+  it('title sync: an upstream retitle updates the task description', async () => {
+    const h = makeHarness();
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-retitle-1', actor: {},
+      text: 'FRAUD-600: original title',
+      meta: { key: 'FRAUD-600', status: 'To Do' },
+    }));
+    expect(h.db.getTaskBySourceRef('jira', 'FRAUD-600')!.description).toBe('FRAUD-600: original title');
+
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-retitle-2', actor: {},
+      text: 'FRAUD-600: renamed to reflect the real scope',
+      meta: { key: 'FRAUD-600', status: 'To Do' },
+    }));
+    expect(h.db.getTaskBySourceRef('jira', 'FRAUD-600')!.description).toBe(
+      'FRAUD-600: renamed to reflect the real scope',
+    );
+  });
+
+  // Report finding #3: "handleTaskSource creates a task for every new
+  // jira/github key regardless of assignee — an issue assigned to someone
+  // else becomes the user's task."
+  it('assignee gating: an issue assigned to a known teammate does not become a task', async () => {
+    const h = makeHarness();
+    const outcome = await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-assignee-1', actor: {},
+      text: 'FRAUD-700: not mine',
+      meta: { key: 'FRAUD-700', status: 'To Do', assignee: { email: 'marian@acme.example' } },
+    }));
+    expect(outcome).toBe('CLASSIFIED_OUT');
+    expect(h.db.getTaskBySourceRef('jira', 'FRAUD-700')).toBeUndefined();
+    expect(h.db.listTasks()).toEqual([]);
+    expect(outcomeInRawLog(h.db, 'jira-assignee-1')).toBe('CLASSIFIED_OUT');
+  });
+
+  it('assignee gating: an unresolvable/absent assignee keeps current behavior (task created)', async () => {
+    const h = makeHarness();
+    await processEvent(h.ctx, makeEvent({
+      source: 'jira', kind: 'issue', externalId: 'jira-assignee-2', actor: {},
+      text: 'FRAUD-701: assignee unknown to botty',
+      meta: { key: 'FRAUD-701', status: 'To Do', assignee: { email: 'ghost@acme.example' } },
+    }));
+    expect(h.db.getTaskBySourceRef('jira', 'FRAUD-701')).toBeDefined();
+  });
 });
 
 describe('github', () => {
@@ -146,6 +255,45 @@ describe('github', () => {
     const closed = h.db.getTaskBySourceRef('github', 'acme-example/checkout#88')!;
     expect(closed.status).toBe('done');
     expect(h.db.taskHistory(closed.id).some((r) => r.changedBy === 'funnel' && r.newValue === 'done')).toBe(true);
+  });
+
+  it('reopen: a merged PR reverted back to open reopens the task', async () => {
+    const h = makeHarness();
+    await processEvent(h.ctx, makeEvent({
+      source: 'github', kind: 'pr', externalId: 'gh-reopen-1', actor: {},
+      text: 'Fix flaky login test',
+      meta: { repo: 'acme-example/checkout', number: 99, state: 'open' },
+    }));
+    await processEvent(h.ctx, makeEvent({
+      source: 'github', kind: 'pr', externalId: 'gh-reopen-2', actor: {},
+      text: 'Fix flaky login test',
+      meta: { repo: 'acme-example/checkout', number: 99, state: 'closed' },
+    }));
+    expect(h.db.getTaskBySourceRef('github', 'acme-example/checkout#99')!.status).toBe('done');
+
+    await processEvent(h.ctx, makeEvent({
+      source: 'github', kind: 'pr', externalId: 'gh-reopen-3', actor: {},
+      text: 'Fix flaky login test',
+      meta: { repo: 'acme-example/checkout', number: 99, state: 'open' },
+    }));
+    expect(h.db.getTaskBySourceRef('github', 'acme-example/checkout#99')!.status).toBe('open');
+    expect(h.db.listTasks()).toHaveLength(1);
+  });
+
+  it('assignee gating: a PR assigned to a known teammate does not become a task', async () => {
+    const h = makeHarness();
+    const outcome = await processEvent(h.ctx, makeEvent({
+      source: 'github', kind: 'pr', externalId: 'gh-assignee-1', actor: {},
+      text: 'Bump dependency',
+      meta: {
+        repo: 'acme-example/checkout',
+        number: 123,
+        state: 'open',
+        assignee: { handle: '@rai' },
+      },
+    }));
+    expect(outcome).toBe('CLASSIFIED_OUT');
+    expect(h.db.getTaskBySourceRef('github', 'acme-example/checkout#123')).toBeUndefined();
   });
 });
 

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CliConfig } from '../config.js';
 import { getJson, waitHealthy } from '../http.js';
-import { logPath, ownership, repoRoot, spawnDetached } from '../procs.js';
+import { acquireSpawnLock, logPath, ownership, releaseSpawnLock, repoRoot, spawnDetached } from '../procs.js';
+import type { ProcName } from '../procs.js';
 
 export const webDistIndex = path.join(repoRoot, 'packages/web/dist/index.html');
 
@@ -20,6 +21,32 @@ export function ensureWebDist(): void {
 }
 
 /**
+ * Spawn `name` iff nothing owns it yet — guarded so a second `botty start`
+ * racing during the boot window (child spawned but not yet listening, so
+ * `ownership()` still reads "down") can't also spawn and overwrite the first
+ * spawn's pidfile. Losing the race just means waiting for the winner's
+ * `waitHealthy` below instead of spawning a duplicate.
+ */
+async function spawnIfDown(cfg: CliConfig, name: ProcName, label: string): Promise<void> {
+  const before = ownership(cfg, name);
+  if (before.state !== 'down') {
+    const port = name === 'agent' ? cfg.port : cfg.simPort;
+    console.log(`${label} already running on :${port} (${before.state === 'foreign' ? `pid ${before.pid}, not started by botty` : 'reusing it'}).`);
+    return;
+  }
+  if (!acquireSpawnLock(cfg.dataDir, name)) {
+    console.log(`another \`botty start\` is already bringing up ${label} — waiting for it.`);
+    return;
+  }
+  try {
+    // Re-check: the lock winner may have finished spawning while we waited on I/O above.
+    if (ownership(cfg, name).state === 'down') spawnDetached(cfg, name);
+  } finally {
+    releaseSpawnLock(cfg.dataDir, name);
+  }
+}
+
+/**
  * Bring the daemon up (idempotent): sim first when mode=sim, then the agent.
  * Foreign listeners on a target port are treated as the running instance —
  * reported, not fought. Verifies isolation before returning.
@@ -28,15 +55,11 @@ export async function startDaemon(cfg: CliConfig): Promise<void> {
   ensureWebDist();
 
   if (cfg.mode === 'sim') {
-    const sim = ownership(cfg, 'sim');
-    if (sim.state === 'down') spawnDetached(cfg, 'sim');
-    else console.log(`sim already running on :${cfg.simPort} (${sim.state === 'foreign' ? `pid ${sim.pid}, not started by botty` : 'reusing it'}).`);
+    await spawnIfDown(cfg, 'sim', 'sim');
     await waitHealthy(`${cfg.simUrl}/control/state`, logPath(cfg.dataDir, 'sim'));
   }
 
-  const agent = ownership(cfg, 'agent');
-  if (agent.state === 'down') spawnDetached(cfg, 'agent');
-  else console.log(`agent already running on :${cfg.port} (${agent.state === 'foreign' ? `pid ${agent.pid}, not started by botty` : 'reusing it'}).`);
+  await spawnIfDown(cfg, 'agent', 'agent');
   await waitHealthy(`${cfg.agentUrl}/api/health`, logPath(cfg.dataDir, 'agent'));
 
   // Isolation: the agent answering on this port must be using our data dir.

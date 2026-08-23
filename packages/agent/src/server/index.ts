@@ -9,11 +9,56 @@ import type { Backfill } from '../backfill/index.js';
 import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { HttpError, zodDetail } from './errors.js';
-import { isLocalHostHeader, isLocalOrigin } from './guards.js';
+import { isLocalHostHeader, isLocalOrigin, type OriginPolicy } from './guards.js';
 import { buildApiRouter, AGENT_VERSION } from './routes.js';
 import { attachWsHub, type WsHub } from './ws.js';
 
 export { AGENT_VERSION };
+
+// A plain module-level flag isn't enough of a guard here: vitest resets the
+// module registry per test file (isolate: true) while running many files in
+// the same worker thread/process, so a module-level `let` would re-arm and
+// double-install on every file even though `process` itself — and its
+// listeners — persists across that reset. Symbol.for uses Node's global
+// symbol registry, which is keyed by string and shared process-wide
+// regardless of which module instance asks for it, so it survives that reset.
+const PROCESS_HANDLERS_INSTALLED = Symbol.for('botty.server.processErrorHandlersInstalled');
+
+/**
+ * Process-level safety net. Without these, an unhandled promise rejection
+ * (Node's default since v15 is to crash the process, and does so with no
+ * botty-specific context) or a synchronous throw that escapes every try/catch
+ * takes the whole agent down silently — no log line naming what happened,
+ * just the process exiting. Idempotent so repeated createServer() calls, as
+ * tests make many of, don't pile up listeners and trip Node's
+ * MaxListenersExceededWarning.
+ *
+ * unhandledRejection logs and keeps running: most rejections here are one
+ * stray promise (e.g. a fire-and-forget in a route handler), not corrupted
+ * process state, and the whole point of this finding is that one of those
+ * shouldn't take the agent down.
+ *
+ * uncaughtException logs and then exits (non-zero): per Node's own guidance,
+ * the process is in an undefined state after a truly uncaught synchronous
+ * exception, so continuing to serve requests as if nothing happened risks
+ * worse (silent corruption) than a clean restart under the process
+ * supervisor (`tsx watch` in dev, launchd/systemd in prod).
+ */
+function installProcessErrorHandlers(): void {
+  const proc = process as unknown as Record<symbol, boolean>;
+  if (proc[PROCESS_HANDLERS_INSTALLED]) return;
+  proc[PROCESS_HANDLERS_INSTALLED] = true;
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('[process] unhandledRejection:', reason, '— promise:', promise);
+  });
+  process.on('uncaughtException', (err, origin) => {
+    console.error('[process] uncaughtException, exiting:', err, '— origin:', origin);
+    // Vitest sets VITEST=true in every worker; exiting there would kill the
+    // whole test run over one incidental uncaught error instead of just
+    // failing the test that caused it. Production (no VITEST env) still exits.
+    if (!process.env.VITEST) process.exit(1);
+  });
+}
 
 export interface AgentServer {
   start(): Promise<void>;
@@ -37,8 +82,30 @@ const webDistDir = fileURLToPath(new URL('../../../web/dist/', import.meta.url))
  * static SPA (packages/web/dist) at / with index.html fallback for non-API GETs.
  */
 export function createServer(ctx: AgentContext, deps: ServerDeps): AgentServer {
+  installProcessErrorHandlers();
   const app = express();
   app.disable('x-powered-by');
+
+  // env.port can be 0 (ephemeral, tests); this is corrected to the real
+  // listen port in start() below, before any request/upgrade can arrive.
+  // Read via originPolicy() (not captured by value) so every guard always
+  // sees the resolved port.
+  let boundPort = ctx.env.port;
+  const originPolicy = (): OriginPolicy => ({ ownPort: boundPort, devPorts: ctx.env.devOriginPorts });
+
+  // Security headers: this API/UI is unauthenticated by design (single local
+  // user), so a page that framed it could ride the user's clicks into
+  // approving a pending MCP action (clickjacking). Both headers block
+  // framing; CSP's frame-ancestors is the modern/standards form and X-Frame-
+  // Options covers older embedders that don't honor it. We deliberately stop
+  // at frame-ancestors here rather than a full CSP (script-src etc.) — the
+  // web bundle hasn't been audited for inline scripts/eval that a stricter
+  // policy could break.
+  app.use((_req, res, next) => {
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    next();
+  });
   // DNS-rebinding guard: the API is unauthenticated, so reject requests whose
   // Host header does not point at loopback (an attacker-controlled DNS name
   // rebound to 127.0.0.1 would otherwise let a webpage read the whole API).
@@ -50,12 +117,15 @@ export function createServer(ctx: AgentContext, deps: ServerDeps): AgentServer {
     next();
   });
   // Cross-origin-fetch guard: like the WS handshake (ws.ts), reject requests
-  // whose Origin header is present but not local — a malicious webpage's
+  // whose Origin header is present but not trusted — a malicious webpage's
   // fetch() would otherwise hit this loopback-bound, unauthenticated API with
-  // the browser's ambient credentials. Non-browser clients (TUI, curl) send
-  // no Origin at all and are unaffected; isLocalOrigin() treats that as local.
+  // the browser's ambient credentials. Loopback-bound does not mean
+  // this-app-only: any other localhost:<port> page is rejected too, only the
+  // agent's own port and configured dev ports are trusted (H6). Non-browser
+  // clients (TUI, curl) send no Origin at all and are unaffected;
+  // isLocalOrigin() treats that as local.
   app.use((req, res, next) => {
-    if (!isLocalOrigin(req.headers.origin)) {
+    if (!isLocalOrigin(req.headers.origin, originPolicy())) {
       res.status(403).json({ error: 'forbidden', detail: 'non-local Origin header' });
       return;
     }
@@ -120,13 +190,12 @@ export function createServer(ctx: AgentContext, deps: ServerDeps): AgentServer {
 
   let server: HttpServer | null = null;
   let wsHub: WsHub | null = null;
-  let boundPort = ctx.env.port;
 
   return {
     start() {
       return new Promise<void>((resolve, reject) => {
         const srv = createHttpServer(app);
-        wsHub = attachWsHub(srv, ctx);
+        wsHub = attachWsHub(srv, ctx, originPolicy);
         srv.once('error', reject);
         // Loopback only: the API is unauthenticated (single local user by design);
         // never expose it to the LAN.

@@ -4,6 +4,7 @@ import {
   type ConfigFileName,
   type CostsReport,
   type Interaction,
+  type PendingAction,
   type Person,
   type SourceCheckRow,
   type Task,
@@ -11,6 +12,7 @@ import {
 } from '@botty/shared';
 import type { Api } from './api.js';
 import { byPriorityThenAge } from './format.js';
+import { sanitizeTerminalText } from './sanitize.js';
 
 /** Structured output of a slash command, rendered as a block in the transcript. */
 export type PanelData =
@@ -34,12 +36,44 @@ export interface CommandResult {
   action?: 'seal' | 'quit' | 'onboarding';
 }
 
+/**
+ * State the App tracks that a command needs but doesn't fetch itself — the
+ * default target for the argument-less nudge/approval actions below.
+ */
+export interface CommandContext {
+  /** taskId from the most recent `notification` WS event that carried one. */
+  lastNudgeTaskId: string | null;
+}
+
 export interface Command {
   name: string;
   /** Argument hint shown in the menu, e.g. "[name]". */
   args?: string;
   description: string;
-  run: (api: Api, arg: string, baseUrl: string) => Promise<CommandResult>;
+  run: (api: Api, arg: string, baseUrl: string, ctx: CommandContext) => Promise<CommandResult>;
+}
+
+/** First 8 chars — enough to disambiguate in the rare multi-pending case, short enough to type. */
+export function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+/** Resolve a user-typed id (full or the `shortId` prefix shown in the UI) against a list, by id. */
+function resolveActionId<T extends { id: string }>(items: T[], arg: string): T | undefined {
+  return items.find((i) => i.id === arg || shortId(i.id) === arg);
+}
+
+/** `/approve`/`/deny` with no id: the single pending action, if there's exactly one. */
+function pickPending(actions: PendingAction[], arg: string): { action?: PendingAction; error?: string } {
+  if (arg) {
+    const hit = resolveActionId(actions, arg);
+    return hit ? { action: hit } : { error: `no pending approval matching "${arg}"` };
+  }
+  if (actions.length === 0) return { error: 'no pending approvals' };
+  if (actions.length === 1) return { action: actions[0] };
+  return {
+    error: `${actions.length} pending approvals — specify one: ${actions.map((a) => shortId(a.id)).join(', ')}`,
+  };
 }
 
 export const COMMANDS: Command[] = [
@@ -106,6 +140,63 @@ export const COMMANDS: Command[] = [
     run: async (api, _arg, baseUrl) => {
       const h = await api.health();
       return { panel: { type: 'health', ...h, baseUrl } };
+    },
+  },
+  {
+    name: 'done',
+    args: '[taskId]',
+    description: 'mark a nudged task done (default: the last nudge)',
+    run: async (api, arg, _baseUrl, ctx) => {
+      const taskId = arg || ctx.lastNudgeTaskId;
+      if (!taskId) return { error: 'no recent nudge to act on — pass a task id: /done <taskId>' };
+      const { task } = await api.taskAction(taskId, { action: 'done' });
+      return { info: `✓ done — ${sanitizeTerminalText(task.description)}` };
+    },
+  },
+  {
+    name: 'snooze',
+    args: '[taskId]',
+    description: 'snooze a nudged task 3 days (default: the last nudge)',
+    run: async (api, arg, _baseUrl, ctx) => {
+      const taskId = arg || ctx.lastNudgeTaskId;
+      if (!taskId) return { error: 'no recent nudge to act on — pass a task id: /snooze <taskId>' };
+      const { task } = await api.taskAction(taskId, { action: 'snooze', snoozeDays: 3 });
+      return { info: `⏰ snoozed 3d — ${sanitizeTerminalText(task.description)}` };
+    },
+  },
+  {
+    name: 'dismiss',
+    args: '[taskId]',
+    description: 'dismiss a nudged task (default: the last nudge)',
+    run: async (api, arg, _baseUrl, ctx) => {
+      const taskId = arg || ctx.lastNudgeTaskId;
+      if (!taskId) return { error: 'no recent nudge to act on — pass a task id: /dismiss <taskId>' };
+      const { task } = await api.taskAction(taskId, { action: 'dismiss' });
+      return { info: `✗ dismissed — ${sanitizeTerminalText(task.description)}` };
+    },
+  },
+  {
+    name: 'approve',
+    args: '[id]',
+    description: 'approve a pending MCP action (default: the only one pending)',
+    run: async (api, arg) => {
+      const { actions } = await api.actions('pending');
+      const { action, error } = pickPending(actions, arg);
+      if (error || !action) return { error: error ?? 'no pending approvals' };
+      const { action: resolved } = await api.approveAction(action.id);
+      return { info: `✓ approved — ${sanitizeTerminalText(resolved.summary)}` };
+    },
+  },
+  {
+    name: 'deny',
+    args: '[id]',
+    description: 'dismiss a pending MCP action (default: the only one pending)',
+    run: async (api, arg) => {
+      const { actions } = await api.actions('pending');
+      const { action, error } = pickPending(actions, arg);
+      if (error || !action) return { error: error ?? 'no pending approvals' };
+      const { action: resolved } = await api.dismissAction(action.id);
+      return { info: `· dismissed — ${sanitizeTerminalText(resolved.summary)}` };
     },
   },
   {

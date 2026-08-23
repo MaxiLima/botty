@@ -4,6 +4,12 @@ import type { LlmTask } from '@botty/shared';
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  /** Input tokens served from the prompt cache — 0 when the SDK didn't report any. */
+  cacheReadInputTokens: number;
+  /** Input tokens written to the prompt cache this call — 0 when the SDK didn't report any. */
+  cacheCreationInputTokens: number;
+  /** SDK-reported authoritative cost for this call, when supplied — null otherwise. */
+  totalCostUsd: number | null;
 }
 
 export type ChatStreamEvent =
@@ -85,6 +91,28 @@ export class LlmParseError extends Error {
   }
 }
 
+/**
+ * Thrown by a chat turn that ended abnormally (explicit interrupt, `error_max_turns`,
+ * a mid-stream subprocess crash/timeout) AFTER some text had already streamed to the
+ * client via onEvent. Before this existed, that already-streamed text was thrown away
+ * on every one of those paths: the SDK's own resumable session transcript kept it (the
+ * next resumed turn sees it as prior assistant output) but our local chat history did
+ * not — the two histories silently diverged and every later turn was built on a lie.
+ * Callers (chat/index.ts) catch this specifically and persist `partialText` as the
+ * turn's content, marked partial, instead of discarding it like a plain error.
+ */
+export class PartialChatTurnError extends Error {
+  constructor(
+    message: string,
+    public readonly partialText: string,
+    public readonly usage: TokenUsage,
+    public readonly providerSessionId: string | null,
+  ) {
+    super(message);
+    this.name = 'PartialChatTurnError';
+  }
+}
+
 /** Resolves the model for a task, honoring the `llm.models` settings override. */
 export type ModelResolver = (task: LlmTask) => string;
 
@@ -97,6 +125,9 @@ export type DecisionRecorder = (input: {
   latencyMs?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
+  totalCostUsd?: number | null;
   relatedRef?: string | null;
   error?: string | null;
 }) => string;

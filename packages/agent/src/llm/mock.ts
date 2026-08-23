@@ -1,5 +1,6 @@
 import { COMMITMENT_SYSTEM_MARKER } from '../chat/commitments.js';
 import type { Db } from '../db/index.js';
+import { HEURISTIC_PATTERNS } from '../ingest/heuristics.js';
 import type {
   ChatTurnRequest,
   ChatTurnResult,
@@ -57,9 +58,13 @@ function extractLine(prompt: string, label: string): string | undefined {
 
 /** Heuristic names from ingest/heuristics.ts tagged `kind: 'commitment'` (funnel.ts's eventPrompt
  * carries them on a `SIGNALS:` line). Deterministic mock stand-in for real owner classification:
- * a message whose ONLY signals are the sender's own commitment phrasing ("I'll", "I will", "on my
- * list", "I own") is the sender's promise TO the user (owner 'them'), not a task for the user. */
-const MOCK_THEM_SIGNAL_NAMES = new Set(['ill', 'i_will', 'on_my_list', 'i_own']);
+ * a message whose ONLY signals are the sender's own commitment phrasing ("I'll", "me encargo",
+ * "te lo mando") is the sender's promise TO the user (owner 'them'), not a task for the user.
+ * DERIVED from HEURISTIC_PATTERNS rather than copied: a hardcoded English-only list silently
+ * inverted every Spanish promise to owner 'me', and went stale whenever the patterns grew. */
+const MOCK_THEM_SIGNAL_NAMES = new Set(
+  HEURISTIC_PATTERNS.filter((p) => p.kind === 'commitment').map((p) => p.name),
+);
 
 function mockTaskOwner(prompt: string): 'me' | 'them' {
   const signalsLine = extractLine(prompt, 'SIGNALS');
@@ -151,7 +156,11 @@ export class MockLlmClient implements LlmClient {
       latencyMs: 0,
       relatedRef: req.sessionKey,
     });
-    return { text, providerSessionId, usage: { inputTokens: 0, outputTokens: 0 } };
+    return {
+      text,
+      providerSessionId,
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: null },
+    };
   }
 
   async structured<T>(req: StructuredRequest<T>): Promise<T> {

@@ -47,6 +47,7 @@ async function setup(): Promise<Harness> {
     simUrl: 'http://localhost:4821',
     mockLlm: true,
     port: 0,
+    devOriginPorts: [5173],
   };
   fs.mkdirSync(env.configArchiveDir, { recursive: true });
   fs.writeFileSync(path.join(env.configDir, 'persona.md'), '# PERSONA\nYou are botty.', 'utf8');

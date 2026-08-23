@@ -12,8 +12,9 @@ import {
   type SourceId,
   type Task,
 } from '@botty/shared';
+import { defaultTimeZone, formatLocalIsoWithOffsetAndWeekday } from '../chat/commitments.js';
 import type { Db } from '../db/index.js';
-import { findNearDuplicateTask } from './dedup.js';
+import { findNearDuplicateTask, findSameThreadFollowUp } from './dedup.js';
 import { matchSignals } from './heuristics.js';
 import { handleGcal, handleTaskSource } from './structured.js';
 import {
@@ -21,6 +22,8 @@ import {
   discoverActor,
   insertEventRawLog,
   logInteraction,
+  mergeTaskEvidence,
+  resolveKnownPerson,
   stampOutcome,
   type FunnelCtx,
 } from './util.js';
@@ -40,7 +43,10 @@ const EXTRACTOR_SYSTEM =
   'user to do). Never invert these: if the message says "I\'ll send you the doc tomorrow", that is a task with ' +
   "owner 'them', not a task telling the user to send anything. When a message contains both a promise and a " +
   "separate ask of the user (e.g. \"I'll send you X — can you review Y first?\"), extract BOTH as separate task " +
-  'entries with their correct owners. Only extract what the message actually supports; empty arrays are fine.';
+  'entries with their correct owners. Only extract what the message actually supports; empty arrays are fine. ' +
+  "OCCURRED_AT below is given in the message sender's own LOCAL wall-clock time (numeric UTC offset + weekday) — " +
+  'resolve "tomorrow", "today"/"hoy", "EOD", "Thursday", etc. against THAT local time and date, never against a ' +
+  'UTC calendar day. A date-only dueDate you emit (no time component) means a LOCAL calendar date in that same zone.';
 
 /**
  * Route one normalized event through ingestion. gcal/jira/github are
@@ -160,6 +166,9 @@ async function runFunnelStages(
   // near-duplicate consolidation): nothing new was created, so the Inspector
   // should say DEDUPED rather than EXTRACTED. Decisions/people still landing
   // this event keeps it EXTRACTED (something real did happen).
+  // A same-thread BUMP (H4a) also keeps EXTRACTED: an existing task really was
+  // updated and re-surfaced by this event, which is not the "nothing happened"
+  // story DEDUPED tells.
   const outcome: FunnelOutcome =
     counts.tasks === 0 && counts.deduped > 0 && counts.decisions === 0 ? 'DEDUPED' : 'EXTRACTED';
   stampOutcome(ctx.db, rawLog, event, outcome, counts);
@@ -216,12 +225,20 @@ export async function retryErroredEvents(ctx: FunnelCtx, source: SourceId): Prom
  * (possibly multiline) TEXT payload can't shadow them; the TEXT:/ACTOR: line
  * convention also keeps MockLlm deterministic.
  */
-function eventPrompt(event: SourceEvent, actorName: string, signals: string[]): string {
+function eventPrompt(
+  event: SourceEvent,
+  actorName: string,
+  signals: string[],
+  timeZone: string = defaultTimeZone(),
+): string {
   const lines = [
     `SOURCE: ${event.source}`,
     `KIND: ${event.kind}`,
     `ACTOR: ${actorName}`,
-    `OCCURRED_AT: ${event.occurredAt}`,
+    // Local wall-clock + numeric offset + weekday (H1 bugfix) — a bare UTC
+    // instant let the model read relative dates ("tomorrow", "hoy") against
+    // the wrong calendar day for negative-offset users. See EXTRACTOR_SYSTEM.
+    `OCCURRED_AT: ${formatLocalIsoWithOffsetAndWeekday(event.occurredAt, timeZone)}`,
   ];
   if (event.threadRef) lines.push(`THREAD: ${event.threadRef}`);
   if (signals.length > 0) lines.push(`SIGNALS: ${signals.join(', ')}`);
@@ -229,9 +246,44 @@ function eventPrompt(event: SourceEvent, actorName: string, signals: string[]): 
   return lines.join('\n');
 }
 
+/**
+ * The extractor's `requesterName` is free text an LLM wrote, not an id: it
+ * says "Marian Gutiérrez" where TEAM.md says "Marian". Trusting it verbatim
+ * (2026-08-21 report, MEDIUM "Ingestion") minted a phantom tier-2 twin and
+ * demoted the task to P2 because the twin isn't Tier-1. Canonicalize against
+ * the roster first (see util.ts resolveKnownPerson) and only mint a discovered
+ * person when nothing plausibly matches.
+ */
 function resolveRequester(db: Db, requesterName: string | undefined, actorPerson: Person): Person {
-  if (!requesterName) return actorPerson;
-  return db.getPersonByName(requesterName) ?? db.upsertDiscoveredPerson({ name: requesterName });
+  const name = requesterName?.trim();
+  if (!name) return actorPerson;
+  return resolveKnownPerson(db, name) ?? db.upsertDiscoveredPerson({ name });
+}
+
+/** `YYYY-MM-DD` (a LOCAL calendar date — see loop/time.ts dueDateInstant). */
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** ISO instant/datetime prefix; anything looser is not a date we can reason about. */
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+
+/**
+ * Extractor output is schema-shaped but not value-checked (`dueDate: z.string()`,
+ * `priority: z.number()`), and the funnel used to persist it raw — the live run
+ * stored `priority: 7` and the literal string `"tomorrow"` as a due date, which
+ * every downstream date comparison then read as NaN (and timewarp NULLed).
+ * Accept only what the rest of the system can actually reason about.
+ */
+function validDueDate(due: string | undefined): string | null {
+  const raw = due?.trim();
+  if (!raw) return null;
+  if (DATE_ONLY_RE.test(raw)) return Number.isNaN(Date.parse(`${raw}T00:00:00Z`)) ? null : raw;
+  if (ISO_DATETIME_RE.test(raw)) return Number.isNaN(Date.parse(raw)) ? null : raw;
+  return null;
+}
+
+/** Clamp to the 1=HIGH / 2=NORMAL / 3=LOW scale used everywhere (DB, API, UI). */
+function clampPriority(priority: number | undefined): number | null {
+  if (typeof priority !== 'number' || !Number.isFinite(priority)) return null;
+  return Math.min(3, Math.max(1, Math.round(priority)));
 }
 
 // A type alias (not `interface`) so it structurally satisfies stampOutcome's
@@ -244,6 +296,11 @@ export type PersistExtractionResult = {
   /** Candidate tasks that matched an existing open task cross-source (see ingest/dedup.ts). */
   deduped: number;
   dedupedTasks: { description: string; existingTaskId: string }[];
+  /** H4a — candidate tasks folded into an open task from the SAME thread. */
+  bumped: number;
+  bumpedTasks: { description: string; existingTaskId: string; strengthened: boolean }[];
+  /** Extractor values dropped or clamped by validation (Inspector-visible). */
+  invalid?: { field: string; value: unknown; kept?: unknown }[];
 };
 
 function persistExtraction(
@@ -254,8 +311,14 @@ function persistExtraction(
 ): PersistExtractionResult {
   const { db } = ctx;
 
-  // people first (so requester lookups can hit them)
-  for (const p of extracted.people) db.upsertDiscoveredPerson(p);
+  // people first (so requester lookups can hit them). An extracted name that
+  // canonicalizes to someone already on the roster ("Marian Gutiérrez" →
+  // "Marian") must NOT mint a tier-2 twin; entries carrying a handle/email are
+  // still upserted, since those merge on identity inside the db helper.
+  for (const p of extracted.people) {
+    if (!p.slackHandle && !p.email && resolveKnownPerson(db, p.name)) continue;
+    db.upsertDiscoveredPerson(p);
+  }
 
   // source_ref slots share the thread base (the resolution sweep strips the
   // #n suffix to recover the thread ref), but every DISTINCT item claims its
@@ -270,8 +333,57 @@ function persistExtraction(
   let tasks = 0;
   let taskSeq = 0;
   let deduped = 0;
+  let bumped = 0;
   const dedupedTasks: { description: string; existingTaskId: string }[] = [];
+  const bumpedTasks: { description: string; existingTaskId: string; strengthened: boolean }[] = [];
+  const invalid: { field: string; value: unknown; kept?: unknown }[] = [];
+  // Tasks THIS message created: siblings of a split extraction, never
+  // follow-up targets for each other (see findSameThreadFollowUp).
+  const createdHere = new Set<string>();
   for (const t of extracted.tasks) {
+    // Extractor values are LLM-authored and only shape-checked by zod — clamp
+    // priority to the 1/2/3 scale and drop a due date that isn't a date.
+    const extractedDue = validDueDate(t.dueDate);
+    if (t.dueDate !== undefined && extractedDue === null) {
+      invalid.push({ field: 'dueDate', value: t.dueDate });
+    }
+    const extractedPriority = clampPriority(t.priority);
+    if (t.priority !== undefined && extractedPriority !== t.priority) {
+      invalid.push({ field: 'priority', value: t.priority, kept: extractedPriority });
+    }
+    const requester = resolveRequester(db, t.requesterName, actorPerson);
+    const owner = t.owner ?? 'me';
+    const priority = extractedPriority ?? (owner === 'them' ? 2 : requester.tier === 1 ? 1 : 2);
+    // Evidence this candidate carries, for whichever existing task absorbs it.
+    const evidence = {
+      requestedBy: requester.id,
+      dueDate: extractedDue,
+      priority: extractedPriority,
+      note: event.text,
+    };
+
+    // H4a — same-thread follow-up: a re-ask about an item this thread already
+    // produced an open task for is a nag, not a new ask. Bump that task
+    // (re-surface + merge evidence) instead of forking `T-1001#2`.
+    const followUp = findSameThreadFollowUp(db, {
+      description: t.description,
+      rawText: event.text,
+      source: event.source,
+      threadBase: baseRef,
+      owner,
+      excludeTaskIds: createdHere,
+    });
+    if (followUp) {
+      const merged = mergeTaskEvidence(db, followUp, { ...evidence, followUp: true });
+      bumped += 1;
+      bumpedTasks.push({
+        description: t.description,
+        existingTaskId: followUp.id,
+        strengthened: merged.strengthened,
+      });
+      continue;
+    }
+
     // ISSUE 2 — cross-source near-duplicate consolidation: the same real-world
     // ask (e.g. a Slack "can you review PR #482" and a GitHub "review
     // requested #482") must not become two open tasks. No LLM call — cheap
@@ -282,14 +394,16 @@ function persistExtraction(
       source: event.source,
     });
     if (existing) {
+      // H4b — the survivor keeps the loser's metadata. Whichever event won the
+      // race used to define the task forever: a github `review requested #482`
+      // upsert (no requester, no due, P2) swallowed Marian's "review PR #482
+      // before EOD" (Tier-1, P1, due today) and the ask went dark.
+      mergeTaskEvidence(db, existing, evidence);
       deduped += 1;
       dedupedTasks.push({ description: t.description, existingTaskId: existing.id });
       continue;
     }
 
-    const requester = resolveRequester(db, t.requesterName, actorPerson);
-    const owner = t.owner ?? 'me';
-    const priority = t.priority ?? (owner === 'them' ? 2 : requester.tier === 1 ? 1 : 2);
     let task: Task | null = null;
     for (;;) {
       const ref = taskSeq === 0 ? baseRef : `${baseRef}#${taskSeq + 1}`;
@@ -303,7 +417,7 @@ function persistExtraction(
           priority,
           owner,
           requestedBy: requester.id,
-          dueDate: t.dueDate ?? null,
+          dueDate: extractedDue,
         },
         'funnel',
       );
@@ -314,6 +428,7 @@ function persistExtraction(
     }
     if (task) {
       db.ftsIndex('task', task.id, task.description);
+      createdHere.add(task.id);
       tasks += 1;
     }
   }
@@ -349,6 +464,17 @@ function persistExtraction(
     }
   }
 
-  if (tasks > 0) broadcastTasksUpdated(ctx);
-  return { tasks, decisions, people: extracted.people.length, deduped, dedupedTasks };
+  // A bump changes an open task (priority/due/re-surface), so the board must
+  // refresh for it too — not only for brand-new rows.
+  if (tasks > 0 || bumped > 0) broadcastTasksUpdated(ctx);
+  return {
+    tasks,
+    decisions,
+    people: extracted.people.length,
+    deduped,
+    dedupedTasks,
+    bumped,
+    bumpedTasks,
+    ...(invalid.length > 0 ? { invalid } : {}),
+  };
 }

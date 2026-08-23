@@ -16,6 +16,14 @@ export interface FixtureMcpServer {
   /** Every tool call the fixture received, in order. */
   calls: { tool: string; args: unknown }[];
   close(): Promise<void>;
+  /**
+   * Simulate a crashed/exited external server: closes the current server-side
+   * transport(s) (propagates onclose to the connected client) WITHOUT closing
+   * the underlying McpServer object itself, so a subsequent transportFactory()
+   * call can still open a fresh linked pair — exactly like a real subprocess
+   * dying and the config's `command` being re-spawned on the next connect.
+   */
+  crash(): Promise<void>;
 }
 
 export function createFixtureMcpServer(serverKey: string): FixtureMcpServer {
@@ -75,6 +83,10 @@ export function createFixtureMcpServer(serverKey: string): FixtureMcpServer {
       await Promise.allSettled(connections);
       await server.close().catch(() => {});
       await Promise.allSettled(serverTransports.map((t) => t.close()));
+    },
+    async crash() {
+      const transports = serverTransports.splice(0, serverTransports.length);
+      await Promise.allSettled(transports.map((t) => t.close()));
     },
   };
 }

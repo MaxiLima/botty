@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WsEvent } from '@botty/shared';
 import { createBus } from '../../src/bus/index.js';
 import { Db } from '../../src/db/index.js';
 import type { McpConfig } from '../../src/config/mcp.js';
-import { createMcpConnections } from '../../src/mcp/connections.js';
+import { createMcpConnections, type McpConnections } from '../../src/mcp/connections.js';
 import { createPendingActionQueue } from '../../src/mcp/pending.js';
 import { createMcpToolsFactory } from '../../src/mcp/tools.js';
 import { createFixtureMcpServer } from './fixture.js';
@@ -91,7 +91,10 @@ describe('createMcpToolsFactory', () => {
       const tools = await h.getMcpChatTools();
       const echo = tools.find((t) => t.name === 'demo_echo')!;
       const result = await echo.execute({ message: 'hi' });
-      expect(result).toEqual({ content: 'echo: hi' });
+      // `note` is the untrusted-content boundary note (mirrors memory_search/
+      // session_search — see chat/tools.ts) attached to every read-mode result.
+      expect(result.content).toBe('echo: hi');
+      expect(result.note).toMatch(/external MCP server/);
       expect(h.fixture.calls).toEqual([{ tool: 'echo', args: { message: 'hi' } }]);
     } finally {
       await h.cleanup();
@@ -152,6 +155,93 @@ describe('createMcpToolsFactory', () => {
       expect(after.map((t) => t.name)).toEqual(['demo_echo']);
     } finally {
       await h.cleanup();
+    }
+  });
+});
+
+describe('createMcpToolsFactory — negative cache with backoff (finding 4)', () => {
+  function stubConfig(): McpConfig {
+    return {
+      servers: {
+        demo: { type: 'stdio', command: 'node', args: [], env: {}, tools: { echo: 'read' } },
+      },
+    };
+  }
+
+  it('does not re-probe a server that just failed until the backoff window elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      let listCalls = 0;
+      const connections: McpConnections = {
+        async listTools() {
+          listCalls++;
+          throw new Error('unreachable');
+        },
+        async callTool() {
+          return { error: 'unreachable' };
+        },
+        onConfigChanged() {},
+        async closeAll() {},
+      };
+      const db = new Db(':memory:');
+      const bus = createBus();
+      const cfg = stubConfig();
+      const pending = createPendingActionQueue({ db, bus, connections });
+      const getMcpChatTools = createMcpToolsFactory({ config: { mcp: () => cfg }, connections, pending });
+
+      // First turn: probes once, fails, tool still builds (generic description).
+      const first = await getMcpChatTools();
+      expect(first.map((t) => t.name)).toEqual(['demo_echo']);
+      expect(listCalls).toBe(1);
+
+      // Every turn immediately after must NOT re-stall on the same dead server —
+      // this is the "~60s per unreachable server, every turn" finding.
+      await getMcpChatTools();
+      await getMcpChatTools();
+      expect(listCalls).toBe(1);
+
+      // Backoff elapsed → the next turn is allowed to retry.
+      vi.advanceTimersByTime(61_000);
+      await getMcpChatTools();
+      expect(listCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a config change resets the backoff immediately (fixing the server shouldn\'t wait out the timer)', async () => {
+    vi.useFakeTimers();
+    try {
+      let listCalls = 0;
+      const connections: McpConnections = {
+        async listTools() {
+          listCalls++;
+          throw new Error('unreachable');
+        },
+        async callTool() {
+          return { error: 'unreachable' };
+        },
+        onConfigChanged() {},
+        async closeAll() {},
+      };
+      const db = new Db(':memory:');
+      const bus = createBus();
+      let cfg = stubConfig();
+      const pending = createPendingActionQueue({ db, bus, connections });
+      const getMcpChatTools = createMcpToolsFactory({ config: { mcp: () => cfg }, connections, pending });
+
+      await getMcpChatTools();
+      expect(listCalls).toBe(1);
+      await getMcpChatTools(); // still within backoff
+      expect(listCalls).toBe(1);
+
+      // User edits mcp.json (different args) — a fresh config key must not sit
+      // behind the OLD config's failure backoff.
+      cfg = { servers: { demo: { type: 'stdio', command: 'node', args: ['--fixed'], env: {}, tools: { echo: 'read' } } } };
+      await getMcpChatTools();
+      expect(listCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

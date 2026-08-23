@@ -41,6 +41,7 @@ async function setup(): Promise<Harness> {
     simUrl: 'http://localhost:4821',
     mockLlm: true,
     port: 0,
+    devOriginPorts: [5173],
   };
   fs.mkdirSync(env.configDir, { recursive: true });
   seedConfigTemplates(env.configDir, 'sim');
@@ -307,6 +308,117 @@ describe('POST /api/onboarding/apply', () => {
         body: JSON.stringify({ answers: {}, steps: ['team'] }),
       });
       expect(res.status).toBe(403);
+    } finally {
+      await h.teardown();
+    }
+  });
+});
+
+describe('onboarding tolerates blank team/checklist rows (skipped-step client payloads)', () => {
+  it('preview: a blank team row (empty name) is dropped, not a 400', async () => {
+    const h = await setup();
+    try {
+      const state = await getState(h.base);
+      const res = await postJson(h.base, '/api/onboarding/preview', {
+        answers: {
+          ...state.prefill,
+          team: {
+            people: [
+              { name: 'Real Person', weight: 'HIGH' as const },
+              { name: '', weight: 'NORMAL' as const },
+              { name: '   ', weight: 'NORMAL' as const },
+            ],
+          },
+        },
+        steps: ['team'],
+      } satisfies OnboardingApplyRequest);
+      expect(res.status).toBe(200);
+      const out = (await res.json()) as {
+        files: Record<string, { content: string; current: string | null; changed: boolean }>;
+      };
+      expect(out.files.team!.content).toContain('Real Person');
+      expect((out.files.team!.content.match(/^-/gm) ?? []).length).toBe(1);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('preview: a blank checklist row (empty text) is dropped, not a 400', async () => {
+    const h = await setup();
+    try {
+      const state = await getState(h.base);
+      const res = await postJson(h.base, '/api/onboarding/preview', {
+        answers: {
+          ...state.prefill,
+          directives: {
+            ...state.prefill.directives!,
+            checklist: [
+              { every: 1, unit: 'd' as const, text: 'real item' },
+              { every: 1, unit: 'd' as const, text: '' },
+            ],
+          },
+        },
+        steps: ['directives'],
+      } satisfies OnboardingApplyRequest);
+      expect(res.status).toBe(200);
+      const out = (await res.json()) as {
+        files: Record<string, { content: string; current: string | null; changed: boolean }>;
+      };
+      expect(out.files.heartbeat!.content).toContain('real item');
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('apply: blank team/checklist rows never reach the frozen shared schema, and only the real rows persist', async () => {
+    const h = await setup();
+    try {
+      const state = await getState(h.base);
+      const body: OnboardingApplyRequest = {
+        answers: {
+          ...state.prefill,
+          team: {
+            people: [
+              { name: 'Zoe', weight: 'CRITICAL' as const },
+              { name: '', weight: 'NORMAL' as const },
+            ],
+          },
+          directives: {
+            ...state.prefill.directives!,
+            checklist: [
+              { every: 2, unit: 'h' as const, text: 'check the burn-down' },
+              { every: 1, unit: 'd' as const, text: '   ' },
+            ],
+          },
+        },
+        steps: ['team', 'directives'],
+      };
+      const res = await postJson(h.base, '/api/onboarding/apply', body);
+      expect(res.status).toBe(200);
+      const out = (await res.json()) as { ok: boolean; warnings: Record<string, string[]> };
+      expect(out.ok).toBe(true);
+
+      const rerun = await getState(h.base);
+      expect(rerun.prefill.team).toEqual({ people: [{ name: 'Zoe', weight: 'CRITICAL' }] });
+      expect(rerun.prefill.directives!.checklist).toEqual([{ every: 2, unit: 'h', text: 'check the burn-down' }]);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('apply: a genuinely invalid non-blank row (e.g. a real name with a bad weight) still 400s', async () => {
+    const h = await setup();
+    try {
+      const state = await getState(h.base);
+      const body = {
+        answers: {
+          ...state.prefill,
+          team: { people: [{ name: 'Real Person', weight: 'NOT_A_REAL_WEIGHT' }] },
+        },
+        steps: ['team'],
+      };
+      const res = await postJson(h.base, '/api/onboarding/apply', body);
+      expect(res.status).toBe(400);
     } finally {
       await h.teardown();
     }

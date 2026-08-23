@@ -25,6 +25,16 @@ import type {
   TaskStatus,
   TickLogRow,
 } from '@botty/shared';
+import type { ScheduleInfo } from './format.js';
+
+/** Mirrors packages/agent/src/config/index.ts's ConfigIssues — warnings for a
+ * hot-reloaded/saved config revision that is NOT what the agent is serving
+ * (last-known-good stays in effect). Only heartbeat.md and mcp.json have a
+ * last-known-good fallback; persona/team are always in effect as saved. */
+export interface ConfigIssue {
+  warnings: string[];
+  since: string;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -80,7 +90,15 @@ export interface TaskActionBody {
 
 export const api = {
   health: () =>
-    req<{ ok: boolean; version: string; mode: string; dbPath: string; onboarded?: boolean }>('GET', '/api/health'),
+    req<{
+      ok: boolean;
+      version: string;
+      mode: string;
+      dbPath: string;
+      onboarded?: boolean;
+      /** Optional — older agents omit it (working/quiet hours, active days). */
+      schedule?: ScheduleInfo;
+    }>('GET', '/api/health'),
 
   // Chat
   // `beforeId` (the boundary row's id from the previous page) turns `before`
@@ -121,7 +139,13 @@ export const api = {
   costs: () => req<{ report: CostsReport }>('GET', '/api/costs'),
 
   // Config
-  config: () => req<{ files: { persona: string; team: string; heartbeat: string } }>('GET', '/api/config'),
+  config: () =>
+    req<{
+      files: { persona: string; team: string; heartbeat: string };
+      // Non-null when the on-disk file has parse warnings: the served config
+      // is the last-known-good (or boot defaults), NOT `files[name]` above.
+      issues: { heartbeat: ConfigIssue | null; mcp: ConfigIssue | null };
+    }>('GET', '/api/config'),
   saveConfig: (name: ConfigFileName, content: string) =>
     req<{ ok: boolean; warnings: string[] }>('PUT', `/api/config/${name}`, { content }),
 
