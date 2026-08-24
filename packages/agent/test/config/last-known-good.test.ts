@@ -122,3 +122,105 @@ describe('ConfigManager — heartbeat last-known-good', () => {
     }
   });
 });
+
+/**
+ * Finding 7: "team.md has no last-known-good — a truncated write demotes
+ * everyone to departed." team() now gets the same treatment as heartbeat()/
+ * mcp() above, EXCEPT the single "TEAM.md defines no people" warning, which
+ * is expected on a legitimately empty/fresh-install file (render.ts already
+ * filters that same warning out of the combined config-issues banner) and
+ * must not block adoption.
+ */
+describe('ConfigManager — team.md last-known-good', () => {
+  const TEAM_DIEGO = '## People\n- **Diego** — weight: CRITICAL | slack: @diego\n';
+  const TEAM_DIEGO_AND_SOFI =
+    '## People\n- **Diego** — weight: CRITICAL | slack: @diego\n- **Sofi** — weight: HIGH | slack: @sofi\n';
+  // Simulates a write truncated mid-entry: Diego's line survives intact, but
+  // Sofi's is cut before it becomes parseable (no closing "**", no separator) —
+  // parseTeam skips it with a warning instead of silently keeping partial junk.
+  const TEAM_TRUNCATED_MID_WRITE = '## People\n- **Diego** — weight: CRITICAL | slack: @diego\n- **Sofi\n';
+
+  it('a truncated write does not demote a previously tier-1 person to departed', () => {
+    const f = makeFixture();
+    try {
+      const config = createConfig(f.env, f.db, f.bus);
+      config.save('team', TEAM_DIEGO_AND_SOFI);
+      config.materializePeople();
+      const sofiBefore = f.db.getPersonByName('Sofi');
+      expect(sofiBefore?.tier).toBe(1);
+      expect(config.teamIssues()).toBeNull();
+
+      const { warnings } = config.save('team', TEAM_TRUNCATED_MID_WRITE);
+      expect(warnings.length).toBeGreaterThan(0);
+      config.materializePeople();
+
+      // Last-known-good (both Diego AND Sofi) keeps being served/materialized —
+      // Sofi must NOT have been silently demoted to tier-2/'departed'.
+      const sofiAfter = f.db.getPersonByName('Sofi');
+      expect(sofiAfter?.tier).toBe(1);
+      expect(sofiAfter?.source).not.toBe('departed');
+      expect(config.team().people.map((p) => p.name).sort()).toEqual(['Diego', 'Sofi']);
+      const issues = config.teamIssues();
+      expect(issues).not.toBeNull();
+      expect(issues!.warnings.some((w) => w.includes('Sofi'))).toBe(true);
+
+      // The raw content on disk is still the user's (truncated) edit.
+      expect(config.raw('team')).toBe(TEAM_TRUNCATED_MID_WRITE);
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it('a genuinely empty team.md ("defines no people") is NOT treated as blocking', () => {
+    const f = makeFixture();
+    try {
+      const config = createConfig(f.env, f.db, f.bus);
+      config.save('team', TEAM_DIEGO);
+      expect(config.teamIssues()).toBeNull();
+
+      // Deliberately clearing the roster back to empty must take effect (this
+      // is a real edit, not a truncation) — the single "no people" warning is
+      // exempt from blocking, same as render.ts's combined-issues filter.
+      const { warnings } = config.save('team', '## People\n');
+      expect(warnings).toEqual(['TEAM.md defines no people']);
+      expect(config.team().people).toEqual([]);
+      expect(config.teamIssues()).toBeNull();
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it('a clean recovery save is adopted and clears the issues', () => {
+    const f = makeFixture();
+    try {
+      const config = createConfig(f.env, f.db, f.bus);
+      config.save('team', TEAM_DIEGO_AND_SOFI);
+      config.save('team', TEAM_TRUNCATED_MID_WRITE);
+      expect(config.teamIssues()).not.toBeNull();
+
+      config.save('team', TEAM_DIEGO_AND_SOFI);
+      expect(config.teamIssues()).toBeNull();
+      expect(config.team().people.map((p) => p.name).sort()).toEqual(['Diego', 'Sofi']);
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it('config.changed broadcasts carry the pending team warnings', () => {
+    const f = makeFixture();
+    try {
+      const config = createConfig(f.env, f.db, f.bus);
+      config.save('team', TEAM_DIEGO_AND_SOFI);
+      config.save('team', TEAM_TRUNCATED_MID_WRITE);
+
+      const changed = f.events.filter(
+        (e): e is Extract<WsEvent, { type: 'config.changed' }> => e.type === 'config.changed',
+      );
+      const last = changed[changed.length - 1]!;
+      expect(last.payload.name).toBe('team');
+      expect(last.payload.warnings?.length).toBeGreaterThan(0);
+    } finally {
+      f.cleanup();
+    }
+  });
+});

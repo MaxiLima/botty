@@ -1,6 +1,48 @@
 import { describe, expect, it } from 'vitest';
 import type { ScheduleInfo } from '../src/api.js';
-import { byPriorityThenAge, priorityColor, priorityLabel, scheduleHint, summarizeGates, timeAgo } from '../src/format.js';
+import { byPriorityThenAge, priorityColor, priorityLabel, scheduleHint, shortDate, summarizeGates, timeAgo } from '../src/format.js';
+
+// H2: date-only (`YYYY-MM-DD`) values must render in the *viewer's local*
+// calendar, not UTC. Mirrors packages/web/test/format.test.ts. Run each
+// assertion under an explicit zone so the suite is deterministic regardless
+// of the host TZ.
+function withTz<T>(tz: string, fn: () => T): T {
+  const original = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return fn();
+  } finally {
+    if (original === undefined) delete process.env.TZ;
+    else process.env.TZ = original;
+  }
+}
+
+describe('shortDate — date-only values render the local calendar day (H2)', () => {
+  it('renders the day the string names, in any zone (UTC-3, UTC+9, UTC)', () => {
+    withTz('America/Argentina/Buenos_Aires', () => {
+      expect(shortDate('2026-08-21')).toBe('Aug 21');
+    });
+    withTz('Asia/Tokyo', () => {
+      expect(shortDate('2026-08-21')).toBe('Aug 21');
+    });
+    withTz('UTC', () => {
+      expect(shortDate('2026-08-21')).toBe('Aug 21');
+    });
+  });
+
+  it('leaves full ISO instants exactly as before (still viewer-local, not date-only special-cased)', () => {
+    withTz('America/Argentina/Buenos_Aires', () => {
+      // 2026-08-22T01:00:00Z is 2026-08-21 22:00 local at UTC-3.
+      expect(shortDate('2026-08-22T01:00:00.000Z')).toBe('Aug 21');
+    });
+  });
+
+  it('keeps the invalid-input contract', () => {
+    expect(shortDate(null)).toBe('–');
+    expect(shortDate(undefined)).toBe('–');
+    expect(shortDate('not-a-date')).toBe('not-a-date');
+  });
+});
 
 describe('priority semantics (must match web/lib/format.ts: 1 = HIGH, 2 = NORMAL, 3 = LOW)', () => {
   it('labels like the web app', () => {

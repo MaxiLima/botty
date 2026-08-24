@@ -51,12 +51,28 @@ describe('pending reducers', () => {
     p = applyToolUse(p, 't1', 'grep');
     expect(p.tools).toEqual(['read_file — package.json', 'grep']);
   });
+
+  it('strips control/escape sequences from a streamed chunk (untrusted content can flow into an LLM reply)', () => {
+    const p = applyChunk(null, 't1', 'hi\x1B[2Jthere\x07');
+    expect(p.text).toBe('hithere');
+  });
+
+  it('strips control/escape sequences from a tool-use name/summary', () => {
+    const p = applyToolUse(null, 't1', 'send_slack\x1B[2J', 'subject: \x1B]0;pwned\x07here');
+    expect(p.tools).toEqual(['send_slack — subject: here']);
+  });
 });
 
 describe('formatApprovalPendingLine', () => {
-  it('renders the inline approval-needed notice', () => {
-    expect(formatApprovalPendingLine('send a slack message to #general')).toBe(
-      'botty ⧗ approval needed: send a slack message to #general — approve in the web app',
+  it('renders the inline approval-needed notice with a short id and the action commands', () => {
+    expect(formatApprovalPendingLine('abcdefgh12345', 'send a slack message to #general')).toBe(
+      'botty ⧗ approval needed [abcdefgh]: send a slack message to #general — /approve or /deny',
+    );
+  });
+
+  it('strips control/escape sequences from the (tool-derived) summary', () => {
+    expect(formatApprovalPendingLine('abcdefgh12345', 'send \x1B[2Jmessage')).toBe(
+      'botty ⧗ approval needed [abcdefgh]: send message — /approve or /deny',
     );
   });
 });
@@ -72,6 +88,10 @@ describe('formatApprovalResolvedLine', () => {
     for (const [status, expected] of cases) {
       expect(formatApprovalResolvedLine(status, 'send a slack message')).toBe(expected);
     }
+  });
+
+  it('strips control/escape sequences from the summary', () => {
+    expect(formatApprovalResolvedLine('executed', 'a\x1B]0;pwned\x07b')).toBe('✓ executed — ab');
   });
 });
 

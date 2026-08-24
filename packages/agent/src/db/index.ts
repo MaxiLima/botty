@@ -8,6 +8,7 @@ import type {
   CalendarEvent,
   ChatTurn,
   Commitment,
+  CommitmentKind,
   Decision,
   Interaction,
   PendingAction,
@@ -60,6 +61,15 @@ export interface TaskPatch {
   dueDate?: string | null;
   snoozeUntil?: string | null;
   doneAt?: string | null;
+  /**
+   * Surfacing bookkeeping — normally only touched by `recordSurface`.
+   * Exposed here so a recycled task (H9: a meeting-prep task reopened for a
+   * new occurrence of a recurring series) can reset its history instead of
+   * inheriting cooldown/hard-cap state earned by a previous, unrelated
+   * occurrence. Omit in every other call site.
+   */
+  surfaceCount?: number;
+  lastSurfacedAt?: string | null;
 }
 
 export interface NewInteraction {
@@ -90,6 +100,9 @@ export interface NewAiDecision {
   latencyMs?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
+  totalCostUsd?: number | null;
   relatedRef?: string | null;
   error?: string | null;
 }
@@ -102,6 +115,22 @@ export interface CostRollupRow {
   calls: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  /** Sum of total_cost_usd across calls in this bucket that had one (SDK-reported, authoritative). */
+  recordedCostUsd: number;
+  /** How many of `calls` carried a recorded total_cost_usd. */
+  recordedCostCalls: number;
+  /**
+   * Token sums restricted to calls WITHOUT a recorded total_cost_usd — the portion
+   * buildCostsReport still has to price at USD/MTok rates. Split out so a bucket that
+   * mixes pre-migration-008 rows (no recorded cost) with new ones (recorded) doesn't
+   * double-count: recordedCostUsd already covers the recorded calls' tokens.
+   */
+  unrecordedInputTokens: number;
+  unrecordedOutputTokens: number;
+  unrecordedCacheReadInputTokens: number;
+  unrecordedCacheCreationInputTokens: number;
 }
 
 export interface NewCommitment {
@@ -109,7 +138,32 @@ export interface NewCommitment {
   /** ISO datetime the commitment is due. */
   dueAt: string;
   sourceTurnId?: string | null;
+  /** Default 'inferred' (the hidden extraction pass); 'explicit' = set_reminder tool. */
+  kind?: 'inferred' | 'explicit';
 }
+
+/**
+ * Window in which an identical explicit reminder (same normalized description,
+ * same due_at) is treated as the SAME reminder rather than a new one. The
+ * set_reminder chat tool can be retried by the SDK after a transient failure —
+ * without this, "remind me in 2 minutes" fired twice (2026-08-21 report, LOW).
+ */
+export const REMINDER_DEDUP_WINDOW_MIN = 5;
+
+/** Whitespace/case-insensitive form used for reminder dedup comparisons. */
+function normalizeCommitmentDescription(description: string): string {
+  return description.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Surface kinds a user can actually answer — the ones that carry buttons
+ * (task_action done/snooze/dismiss) or that the response tracker classifies
+ * from chat. Briefings, reminders, checklist prompts, commitments and
+ * auto-resolve cards have no answer affordance, so sweeping them into
+ * response_type='expired' only pollutes the response signal judgment reads
+ * (2026-08-21 report, LOW). Mirrors TRACKED_KINDS in loop/response-tracker.ts.
+ */
+export const ANSWERABLE_SURFACE_KINDS = ['nudge', 'meeting_prep'] as const;
 
 export interface NewPendingAction {
   server: string;
@@ -290,9 +344,12 @@ export class Db {
   /** Resolve an inbound actor to a person via slack handle, email, or display name. */
   findPersonByActor(actor: { handle?: string; email?: string; displayName?: string }): Person | undefined {
     if (actor.handle) {
-      const h = actor.handle.replace(/^@/, '');
+      // Handles are matched case-insensitively: Slack renders the same actor as
+      // `@Diego` or `@diego` depending on where the mention came from, and a
+      // case-sensitive compare silently demoted a Tier-1 teammate to a stranger.
+      const h = actor.handle.replace(/^@/, '').toLowerCase();
       const row = this.raw
-        .prepare('SELECT * FROM people WHERE slack_handle=? OR slack_handle=?')
+        .prepare('SELECT * FROM people WHERE lower(slack_handle)=? OR lower(slack_handle)=?')
         .get(h, `@${h}`);
       if (row) return mapRow<Person>(row);
     }
@@ -367,28 +424,34 @@ export class Db {
   insertTask(input: NewTask, changedBy = 'funnel'): Task | null {
     const now = nowIso();
     const id = nanoid();
-    const res = this.raw
-      .prepare(
-        `INSERT INTO tasks (id, description, raw_text, source, source_ref, status, priority, owner, requested_by, project_id, due_date, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(source, source_ref) DO NOTHING`,
-      )
-      .run(
-        id,
-        input.description,
-        input.rawText ?? null,
-        input.source,
-        input.sourceRef ?? null,
-        input.priority ?? 2,
-        input.owner ?? 'me',
-        input.requestedBy ?? null,
-        input.projectId ?? null,
-        input.dueDate ?? null,
-        now,
-        now,
-      );
-    if (res.changes === 0) return null;
-    this.appendTaskHistory(id, 'status', null, 'open', changedBy);
+    // One transaction: a throw between the row and its `created` history row
+    // used to leave a task with no history at all (2026-08-21 report, LOW).
+    const insert = this.raw.transaction((): number => {
+      const res = this.raw
+        .prepare(
+          `INSERT INTO tasks (id, description, raw_text, source, source_ref, status, priority, owner, requested_by, project_id, due_date, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(source, source_ref) DO NOTHING`,
+        )
+        .run(
+          id,
+          input.description,
+          input.rawText ?? null,
+          input.source,
+          input.sourceRef ?? null,
+          input.priority ?? 2,
+          input.owner ?? 'me',
+          input.requestedBy ?? null,
+          input.projectId ?? null,
+          input.dueDate ?? null,
+          now,
+          now,
+        );
+      if (res.changes === 0) return 0;
+      this.appendTaskHistory(id, 'status', null, 'open', changedBy);
+      return res.changes;
+    });
+    if (insert() === 0) return null;
     return this.getTask(id)!;
   }
 
@@ -464,6 +527,64 @@ export class Db {
     return due.map((t) => this.getTask(t.id)!);
   }
 
+  /**
+   * Open tasks whose snooze most recently expired (via `unsnoozeDue`) and
+   * that haven't been surfaced since — H3 fix (docs/specs/loop.md candidate
+   * gathering): `unsnoozeDue` only flips status once, so a one-shot flag
+   * threaded through the tick that catches the expiry isn't enough — that
+   * tick's rules-filter (min-gap/hourly-cap/quiet-hours) may still reject the
+   * candidate, and without a durable marker it then falls out of every
+   * gathering query (not due soon, already surfaced once so not
+   * NEVER_SURFACED, and `updated_at` was just bumped by the reopen so not
+   * STALE for another `stale_after_days`). Reusing `task_history` (written by
+   * `updateTask` inside `unsnoozeDue`, changed_by='loop') instead of a
+   * one-shot flag survives across ticks with no schema change, and clears
+   * itself the moment the task is actually surfaced again (`recordSurface`
+   * bumps `last_surfaced_at` past the reopen).
+   */
+  snoozeExpiredTasks(): Task[] {
+    return mapRows<Task>(
+      this.raw
+        .prepare(
+          `SELECT t.* FROM tasks t
+           WHERE t.status='open'
+             AND EXISTS (
+               SELECT 1 FROM task_history h
+               WHERE h.task_id = t.id
+                 AND h.field = 'status'
+                 AND h.old_value = 'snoozed'
+                 AND h.new_value = 'open'
+                 AND h.changed_by = 'loop'
+                 AND (t.last_surfaced_at IS NULL OR h.changed_at > t.last_surfaced_at)
+             )
+           ORDER BY t.updated_at`,
+        )
+        .all(),
+    );
+  }
+
+  /**
+   * Open/snoozed meeting-prep tasks (source 'gcal', source_ref
+   * 'meeting_prep:<id>' — see loop/candidates.ts) whose meeting started at
+   * least `graceMin` minutes ago. H9 fix: nothing else ever closed a
+   * synthesized prep task, so once its meeting passed it stayed "due soon"
+   * forever (a past dueDate is trivially < 48h away), bypassing the hard cap
+   * and the one-notify cap and re-costing an LLM call every tick.
+   */
+  elapsedMeetingPrepTasks(now: string, graceMin: number): Task[] {
+    const cutoff = new Date(Date.parse(now) - graceMin * 60_000).toISOString();
+    return mapRows<Task>(
+      this.raw
+        .prepare(
+          `SELECT * FROM tasks
+           WHERE source='gcal' AND source_ref LIKE 'meeting_prep:%'
+             AND status IN ('open', 'snoozed') AND due_date IS NOT NULL AND due_date <= ?
+           ORDER BY due_date`,
+        )
+        .all(cutoff),
+    );
+  }
+
   /** Patch a task; every changed field gets a task_history row. */
   updateTask(id: string, patch: TaskPatch, changedBy: string): Task {
     const before = this.getTask(id);
@@ -477,13 +598,22 @@ export class Db {
       dueDate: 'due_date',
       snoozeUntil: 'snooze_until',
       doneAt: 'done_at',
+      surfaceCount: 'surface_count',
+      lastSurfacedAt: 'last_surfaced_at',
     };
+    // Double "done": a second done click/tool call on an already-done task is a
+    // no-op on `status`, but would rewrite done_at to the second click's time
+    // and log a bogus history row. The first completion instant wins.
+    const effective: TaskPatch =
+      before.status === 'done' && before.doneAt && patch.doneAt && (patch.status ?? 'done') === 'done'
+        ? { ...patch, doneAt: before.doneAt }
+        : patch;
     const sets: string[] = [];
     const values: unknown[] = [];
     const tx = this.raw.transaction(() => {
       for (const [key, col] of Object.entries(columns) as [keyof TaskPatch, string][]) {
-        if (!(key in patch)) continue;
-        const newValue = patch[key] ?? null;
+        if (!(key in effective)) continue;
+        const newValue = effective[key] ?? null;
         const oldValue = (before as unknown as Record<string, unknown>)[key] ?? null;
         if (newValue === oldValue) continue;
         sets.push(`${col}=?`);
@@ -742,6 +872,15 @@ export class Db {
     );
   }
 
+  /**
+   * Remove a cached calendar event by its external id — H9: a cancelled or
+   * deleted gcal event must stop appearing to `eventsStartingBetween`
+   * (meeting-prep queries) rather than sitting there upserted forever.
+   */
+  deleteCalendarEvent(externalId: string): void {
+    this.raw.prepare('DELETE FROM calendar_events WHERE external_id=?').run(externalId);
+  }
+
   /** Events starting in [fromIso, toIso) — meeting-prep + briefing queries. */
   eventsStartingBetween(fromIso: string, toIso: string): CalendarEvent[] {
     return mapRows<CalendarEvent>(
@@ -753,16 +892,51 @@ export class Db {
 
   // ---------- commitments (inferred, feature #2) ----------
 
-  insertCommitment(input: NewCommitment): Commitment {
+  /**
+   * Insert a commitment. Explicit reminders are IDEMPOTENT within
+   * `REMINDER_DEDUP_WINDOW_MIN`: a second set_reminder call with the same
+   * normalized description and the same due_at (a tool retry) returns the
+   * existing row instead of scheduling a duplicate banner.
+   */
+  insertCommitment(input: NewCommitment, now = nowIso()): Commitment {
+    const kind = input.kind ?? 'inferred';
+    if (kind === 'explicit') {
+      const existing = this.findRecentExplicitCommitment(input.description, input.dueAt, now);
+      if (existing) return existing;
+    }
     const id = nanoid();
-    const now = nowIso();
     this.raw
       .prepare(
-        `INSERT INTO commitments (id, description, due_at, source_turn_id, created_at, status)
-         VALUES (?, ?, ?, ?, ?, 'open')`,
+        `INSERT INTO commitments (id, description, due_at, source_turn_id, created_at, status, kind)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`,
       )
-      .run(id, input.description, input.dueAt, input.sourceTurnId ?? null, now);
+      .run(id, input.description, input.dueAt, input.sourceTurnId ?? null, now, kind);
     return this.getCommitment(id)!;
+  }
+
+  /**
+   * An explicit reminder for the same instant whose description matches
+   * `description` (case/whitespace-insensitive) and that was created within
+   * `windowMin` of `now` — the dedup lookup behind insertCommitment. Any status
+   * counts: if the twin already fired, re-creating it would fire twice.
+   */
+  findRecentExplicitCommitment(
+    description: string,
+    dueAt: string,
+    now = nowIso(),
+    windowMin = REMINDER_DEDUP_WINDOW_MIN,
+  ): Commitment | undefined {
+    const cutoff = new Date(Date.parse(now) - windowMin * 60_000).toISOString();
+    const wanted = normalizeCommitmentDescription(description);
+    return mapRows<Commitment>(
+      this.raw
+        .prepare(
+          `SELECT * FROM commitments
+           WHERE kind='explicit' AND due_at=? AND created_at >= ?
+           ORDER BY created_at DESC`,
+        )
+        .all(dueAt, cutoff),
+    ).find((c) => normalizeCommitmentDescription(c.description) === wanted);
   }
 
   getCommitment(id: string): Commitment | undefined {
@@ -794,22 +968,43 @@ export class Db {
 
   /**
    * Expire open commitments whose due date is more than `graceHours` in the past
-   * and were never delivered. Called at the start of tick delivery gathering.
+   * and were never delivered. Two callers, deliberately scoped differently:
+   *   - the tick's END-of-tick sweep (loop/tick.ts step 10.5, all kinds), which
+   *     must run AFTER gathering so a commitment first seen by this tick still
+   *     gets its shot at judgment;
+   *   - the reminder scan (loop/reminders.ts, kind='explicit' only), which runs
+   *     BEFORE delivering so a reminder left overdue across days of downtime is
+   *     expired rather than fired absurdly late. That one MUST stay scoped to
+   *     explicit: inferred commitments are delivered by working-hours-gated
+   *     ticks, so a 15 s scanner sweeping them would wipe out e.g. a weekend
+   *     commitment before Monday's first tick could ever see it.
    * Returns the number of rows expired.
    */
-  expireStaleCommitments(now = nowIso(), graceHours: number): number {
+  expireStaleCommitments(now = nowIso(), graceHours: number, kind?: CommitmentKind): number {
     const cutoff = new Date(Date.parse(now) - graceHours * 3_600_000).toISOString();
     const res = this.raw
-      .prepare(`UPDATE commitments SET status='expired' WHERE status='open' AND due_at < ?`)
-      .run(cutoff);
+      .prepare(
+        `UPDATE commitments SET status='expired'
+         WHERE status='open' AND due_at < ?${kind ? ' AND kind=?' : ''}`,
+      )
+      .run(...(kind ? [cutoff, kind] : [cutoff]));
     return res.changes;
   }
 
-  /** Deliveries (status='delivered') since `sinceIso` — the maxPerDay cap. */
-  countCommitmentDeliveriesSince(sinceIso: string): number {
+  /**
+   * Deliveries (status='delivered') since `sinceIso`, optionally of one kind
+   * only — the maxPerDay cap. The inferred budget passes kind='inferred':
+   * explicit reminders are direct user commands delivered on time by
+   * loop/reminders.ts and must NOT consume the anti-nag budget that governs
+   * botty's own inferred follow-ups (H10a, 2026-08-21 report).
+   */
+  countCommitmentDeliveriesSince(sinceIso: string, kind?: CommitmentKind): number {
     const row = this.raw
-      .prepare(`SELECT COUNT(*) AS n FROM commitments WHERE status='delivered' AND delivered_at >= ?`)
-      .get(sinceIso) as { n: number };
+      .prepare(
+        `SELECT COUNT(*) AS n FROM commitments
+         WHERE status='delivered' AND delivered_at >= ?${kind ? ' AND kind=?' : ''}`,
+      )
+      .get(...(kind ? [sinceIso, kind] : [sinceIso])) as { n: number };
     return row.n;
   }
 
@@ -1019,13 +1214,21 @@ export class Db {
     );
   }
 
-  /** Mark unanswered surfaces older than `beforeIso` as expired. Returns affected count. */
+  /**
+   * Mark unanswered ANSWERABLE surfaces older than `beforeIso` as expired.
+   * Returns affected count. Scoped to ANSWERABLE_SURFACE_KINDS: a briefing or a
+   * reminder banner carries no buttons and the response tracker never
+   * classifies one, so stamping them 'expired' invented an "ignored" signal out
+   * of surfaces the user was never able to answer.
+   */
   expireSurfacesBefore(beforeIso: string): number {
+    const placeholders = ANSWERABLE_SURFACE_KINDS.map(() => '?').join(', ');
     const res = this.raw
       .prepare(
-        "UPDATE proactive_log SET response_type='expired', response_at=? WHERE response_type IS NULL AND surfaced_at < ?",
+        `UPDATE proactive_log SET response_type='expired', response_at=?
+         WHERE response_type IS NULL AND surfaced_at < ? AND surface_kind IN (${placeholders})`,
       )
-      .run(nowIso(), beforeIso);
+      .run(nowIso(), beforeIso, ...ANSWERABLE_SURFACE_KINDS);
     return res.changes;
   }
 
@@ -1087,8 +1290,8 @@ export class Db {
     const id = nanoid();
     this.raw
       .prepare(
-        `INSERT INTO ai_decisions (id, kind, input_json, output_json, model, latency_ms, input_tokens, output_tokens, related_ref, error, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ai_decisions (id, kind, input_json, output_json, model, latency_ms, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, total_cost_usd, related_ref, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -1099,6 +1302,9 @@ export class Db {
         input.latencyMs ?? null,
         input.inputTokens ?? null,
         input.outputTokens ?? null,
+        input.cacheReadInputTokens ?? null,
+        input.cacheCreationInputTokens ?? null,
+        input.totalCostUsd ?? null,
         input.relatedRef ?? null,
         input.error ?? null,
         nowIso(),
@@ -1138,7 +1344,11 @@ export class Db {
 
   /**
    * Per (kind, model, UTC day) usage rollup over all of ai_decisions — the raw
-   * material for the costs report. Token sums treat NULL as 0.
+   * material for the costs report. Token sums treat NULL as 0. Rows are further
+   * split into "recorded" (SDK-reported total_cost_usd — authoritative) and
+   * "unrecorded" (no total_cost_usd; NULL on rows from before migration 008, or
+   * any call that never reached a 'result' message) so buildCostsReport can sum
+   * recorded costs as-is and only price the unrecorded remainder — see H12.
    */
   costRollup(): CostRollupRow[] {
     return mapRows<CostRollupRow>(
@@ -1146,7 +1356,15 @@ export class Db {
         .prepare(
           `SELECT kind, model, substr(created_at, 1, 10) AS day, COUNT(*) AS calls,
                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
-                  COALESCE(SUM(output_tokens), 0) AS output_tokens
+                  COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                  COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+                  COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+                  COALESCE(SUM(total_cost_usd), 0) AS recorded_cost_usd,
+                  COUNT(total_cost_usd) AS recorded_cost_calls,
+                  COALESCE(SUM(CASE WHEN total_cost_usd IS NULL THEN input_tokens ELSE 0 END), 0) AS unrecorded_input_tokens,
+                  COALESCE(SUM(CASE WHEN total_cost_usd IS NULL THEN output_tokens ELSE 0 END), 0) AS unrecorded_output_tokens,
+                  COALESCE(SUM(CASE WHEN total_cost_usd IS NULL THEN cache_read_input_tokens ELSE 0 END), 0) AS unrecorded_cache_read_input_tokens,
+                  COALESCE(SUM(CASE WHEN total_cost_usd IS NULL THEN cache_creation_input_tokens ELSE 0 END), 0) AS unrecorded_cache_creation_input_tokens
            FROM ai_decisions
            GROUP BY kind, model, day`,
         )

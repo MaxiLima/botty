@@ -1,4 +1,5 @@
 import type { ChatTurn, PendingActionStatus } from '@botty/shared';
+import { sanitizeTerminalText } from './sanitize.js';
 
 /** Live (streaming) assistant reply — mirrors the web app's PendingTurn. */
 export interface PendingTurn {
@@ -37,7 +38,9 @@ function ensure(prev: PendingTurn | null, turnId: string): PendingTurn {
 
 export function applyChunk(prev: PendingTurn | null, turnId: string, delta: string): PendingTurn {
   const p = ensure(prev, turnId);
-  return { ...p, text: p.text + delta, thinking: false };
+  // Streamed text renders raw (no renderMarkdown pass mid-stream — see
+  // StreamTail in App.tsx) — sanitize at the source instead.
+  return { ...p, text: p.text + sanitizeTerminalText(delta), thinking: false };
 }
 
 export function applyThinking(prev: PendingTurn | null, turnId: string, on: boolean): PendingTurn | null {
@@ -50,14 +53,20 @@ export function applyThinking(prev: PendingTurn | null, turnId: string, on: bool
 
 export function applyToolUse(prev: PendingTurn | null, turnId: string, name: string, summary?: string): PendingTurn {
   const p = ensure(prev, turnId);
-  return { ...p, thinking: false, tools: [...p.tools, summary ? `${name} — ${summary}` : name] };
+  const cleanName = sanitizeTerminalText(name);
+  const cleanSummary = summary !== undefined ? sanitizeTerminalText(summary) : undefined;
+  return { ...p, thinking: false, tools: [...p.tools, cleanSummary ? `${cleanName} — ${cleanSummary}` : cleanName] };
 }
 
-// ---------- consent-gated external tool actions (read-only display) ----------
+// ---------- consent-gated external tool actions ----------
 
-/** `action.pending` — a new approval-required card landed; TUI only shows a notice, acting stays in the web app. */
-export function formatApprovalPendingLine(summary: string): string {
-  return `botty ⧗ approval needed: ${summary} — approve in the web app`;
+/**
+ * `action.pending` — a new approval-required card landed. `id` is the full
+ * pending-action id; only its first 8 chars (App's `shortId`) are shown, since
+ * `/approve`/`/deny` accept either the full id or that prefix.
+ */
+export function formatApprovalPendingLine(id: string, summary: string): string {
+  return `botty ⧗ approval needed [${id.slice(0, 8)}]: ${sanitizeTerminalText(summary)} — /approve or /deny`;
 }
 
 const RESOLVED_GLYPH: Record<PendingActionStatus, string> = {
@@ -70,7 +79,7 @@ const RESOLVED_GLYPH: Record<PendingActionStatus, string> = {
 
 /** `action.resolved` — matching short line for the terminal state of a previously announced action. */
 export function formatApprovalResolvedLine(status: PendingActionStatus, summary: string): string {
-  return `${RESOLVED_GLYPH[status]} ${status} — ${summary}`;
+  return `${RESOLVED_GLYPH[status]} ${status} — ${sanitizeTerminalText(summary)}`;
 }
 
 /**

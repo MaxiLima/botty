@@ -42,6 +42,26 @@ describe('executeActions', () => {
     );
   });
 
+  // Defense in depth for the duplicate-action bug (validateJudgment already
+  // dedupes upstream — see loop/judgment.test.ts — but executeActions is the
+  // only place that actually mutates surface_count, so it guards itself too).
+  it('never double-applies two notify actions for the same task', () => {
+    const deps = makeDeps();
+    const task = deps.db.insertTask({ description: 'thing', source: 'manual' }, 'test')!;
+    const executed = executeActions(
+      deps,
+      [
+        { type: 'notify', taskId: task.id, score: 9, message: 'first', reasoning: 'r' },
+        { type: 'notify', taskId: task.id, score: 5, message: 'second', reasoning: 'r' },
+      ],
+      { now: NOW, trigger: 'schedule' },
+    );
+    expect(executed).toHaveLength(1);
+    expect(executed[0]!.message).toBe('first');
+    expect(deps.db.getTask(task.id)!.surfaceCount).toBe(1);
+    expect(deps.db.surfacesForTask(task.id)).toHaveLength(1);
+  });
+
   it('clamps update_priority to the 1 (HIGH) .. 3 (LOW) task scale', () => {
     const deps = makeDeps();
     const task = deps.db.insertTask({ description: 'thing', source: 'manual' }, 'test')!;

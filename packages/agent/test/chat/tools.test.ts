@@ -23,12 +23,13 @@ function setup() {
 }
 
 describe('chat tool registry', () => {
-  it('exposes the four tools with zod raw shapes', () => {
+  it('exposes the five tools with zod raw shapes', () => {
     const { tools } = setup();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'capture_task',
       'memory_search',
       'session_search',
+      'set_reminder',
       'task_action',
     ]);
     for (const t of tools) {

@@ -1,0 +1,12 @@
+-- Commitment kind (2026-08-15, explicit minute-level reminders — docs/specs/loop.md):
+-- 'inferred'  — extracted by the hidden post-turn pass (chat/commitments.ts) and
+--               delivered through tick judgment with min-age/max-per-day gates
+--               (loop/commitments.ts). The only kind that existed before this
+--               migration, hence the DEFAULT.
+-- 'explicit'  — created by the user through the set_reminder chat tool ("remind me
+--               in 2 minutes"). Delivered exactly at due_at by the reminder
+--               scheduler (loop/reminders.ts): no judgment LLM call, no min-age,
+--               no per-day cap, no working-hours gate — the user asked for that
+--               precise moment, so the anti-nag machinery for *inferred* content
+--               does not apply.
+ALTER TABLE commitments ADD COLUMN kind TEXT NOT NULL DEFAULT 'inferred';

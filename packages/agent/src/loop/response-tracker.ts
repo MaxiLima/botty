@@ -7,8 +7,10 @@ import type { Db } from '../db/index.js';
  * only (no LLM): each user chat message is matched against un-responded
  * surfaces from the last 24h. A message that mentions a surfaced task's
  * keywords AND a completion phrase ⇒ 'completed'; a snooze phrase ⇒ 'snoozed'.
- * UI buttons remain the primary path (they call REST tasks/:id/action); this
- * only fills proactive_log.response_*. Unanswered surfaces expire after 24h.
+ * UI buttons are the other path: POST /tasks/:id/action (server/routes.ts)
+ * calls mostRecentAnswerableSurface() below to record the same
+ * proactive_log.response_* fields on the surface the button answered.
+ * Unanswered surfaces expire after 24h.
  */
 
 export const COMPLETION_RE =
@@ -63,6 +65,31 @@ export function classifyMessage(message: string, surfaces: SurfaceWithTask[]): C
 /** Surface kinds the tracker classifies against (briefings aren't per-task asks). */
 const TRACKED_KINDS = new Set(['nudge', 'meeting_prep']);
 
+/** ms in the configured (or default) response window — shared by the tracker and the REST route. */
+export function responseWindowMs(config?: { heartbeat(): { responseWindowHours: number } }): number {
+  return (config?.heartbeat().responseWindowHours ?? HEARTBEAT_DEFAULTS.responseWindowHours) * 3_600_000;
+}
+
+/**
+ * The task's most recent surface that is still eligible to receive a
+ * response: unanswered (response_type IS NULL) and surfaced within the
+ * response window ending at `now`. Reuses db.openSurfacesSince, the same
+ * "unanswered + in-window" query the chat heuristic above builds its
+ * candidates from, so a nudge answered via a UI button and one answered via
+ * chat are recognized identically. Returns null when there's nothing to
+ * attach a response to (e.g. no surface, already answered, or expired) —
+ * callers should treat that as "do nothing", not an error.
+ */
+export function mostRecentAnswerableSurface(
+  db: Db,
+  taskId: string,
+  now: string,
+  windowMs: number,
+): ProactiveLogRow | null {
+  const since = new Date(Date.parse(now) - windowMs).toISOString();
+  return db.openSurfacesSince(since).find((s) => s.taskId === taskId) ?? null;
+}
+
 export interface ResponseTracker {
   start(): void;
   stop(): void;
@@ -81,9 +108,7 @@ export function createResponseTracker(deps: {
   config?: { heartbeat(): { responseWindowHours: number } };
 }): ResponseTracker {
   const { db, bus } = deps;
-  const windowMs = (): number =>
-    (deps.config?.heartbeat().responseWindowHours ?? HEARTBEAT_DEFAULTS.responseWindowHours) *
-    3_600_000;
+  const windowMs = (): number => responseWindowMs(deps.config);
   let unsubscribe: (() => void) | null = null;
   let lastAt: string | null = null;
 

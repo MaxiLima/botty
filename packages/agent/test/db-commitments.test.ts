@@ -14,6 +14,20 @@ describe('Db — commitments', () => {
     db.close();
   });
 
+  it('kind defaults to inferred and round-trips explicit (migration 007)', () => {
+    const db = new Db(':memory:');
+    const inferred = db.insertCommitment({ description: 'a', dueAt: '2026-08-15T15:00:00.000Z' });
+    expect(inferred.kind).toBe('inferred');
+    const explicit = db.insertCommitment({
+      description: 'b',
+      dueAt: '2026-08-15T15:00:00.000Z',
+      kind: 'explicit',
+    });
+    expect(explicit.kind).toBe('explicit');
+    expect(db.getCommitment(explicit.id)?.kind).toBe('explicit');
+    db.close();
+  });
+
   it('insertCommitment persists sourceTurnId when given', () => {
     const db = new Db(':memory:');
     const c = db.insertCommitment({
@@ -74,6 +88,53 @@ describe('Db — commitments', () => {
     db.markCommitmentDelivered(b.id, '2026-07-09T00:00:00.000Z'); // inside window
     db.markCommitmentDelivered(c.id, '2026-07-09T05:00:00.000Z'); // inside window
     expect(db.countCommitmentDeliveriesSince('2026-07-09T00:00:00.000Z')).toBe(2);
+  });
+
+  it('expireStaleCommitments can be scoped to one kind (the reminder scan sweeps explicit only)', () => {
+    const db = new Db(':memory:');
+    const now = '2026-07-09T06:00:00.000Z';
+    const staleExplicit = db.insertCommitment(
+      { description: 'stale reminder', dueAt: '2026-07-08T00:00:00.000Z', kind: 'explicit' },
+      now,
+    );
+    const staleInferred = db.insertCommitment({
+      description: 'stale inferred — still the tick\'s to judge',
+      dueAt: '2026-07-08T00:00:00.000Z',
+    });
+    expect(db.expireStaleCommitments(now, 24, 'explicit')).toBe(1);
+    expect(db.getCommitment(staleExplicit.id)!.status).toBe('expired');
+    expect(db.getCommitment(staleInferred.id)!.status).toBe('open');
+  });
+
+  it('countCommitmentDeliveriesSince can be scoped by kind (H10a: reminders are not inferred budget)', () => {
+    const db = new Db(':memory:');
+    const since = '2026-07-09T00:00:00.000Z';
+    for (let i = 0; i < 3; i++) {
+      const r = db.insertCommitment(
+        { description: `reminder ${i}`, dueAt: '2026-07-09T01:00:00.000Z', kind: 'explicit' },
+        since,
+      );
+      db.markCommitmentDelivered(r.id, '2026-07-09T02:00:00.000Z');
+    }
+    const inferred = db.insertCommitment({ description: 'inferred', dueAt: '2026-07-09T01:00:00.000Z' });
+    db.markCommitmentDelivered(inferred.id, '2026-07-09T03:00:00.000Z');
+
+    expect(db.countCommitmentDeliveriesSince(since)).toBe(4); // unscoped: everything
+    expect(db.countCommitmentDeliveriesSince(since, 'inferred')).toBe(1);
+    expect(db.countCommitmentDeliveriesSince(since, 'explicit')).toBe(3);
+  });
+
+  it('findRecentExplicitCommitment ignores inferred twins and out-of-window ones', () => {
+    const db = new Db(':memory:');
+    const now = '2026-07-09T06:00:00.000Z';
+    const dueAt = '2026-07-09T07:00:00.000Z';
+    db.insertCommitment({ description: 'ping Ana', dueAt }); // inferred twin
+    expect(db.findRecentExplicitCommitment('ping Ana', dueAt, now)).toBeUndefined();
+
+    const explicit = db.insertCommitment({ description: 'ping Ana', dueAt, kind: 'explicit' }, now);
+    expect(db.findRecentExplicitCommitment(' PING   ana ', dueAt, now)?.id).toBe(explicit.id);
+    // 10 min later is outside the 5 min retry window
+    expect(db.findRecentExplicitCommitment('ping Ana', dueAt, '2026-07-09T06:10:00.000Z')).toBeUndefined();
   });
 
   it('openCommitments lists only open ones, ordered by due_at', () => {

@@ -89,7 +89,9 @@ export function CostsPage() {
     <div className="costs-page">
       <p className="costs-note">
         Estimated at Claude API list prices — botty runs on your subscription, so this is what the
-        recorded usage <em>would</em> cost, not a bill. Days are UTC.
+        recorded usage <em>would</em> cost, not a bill. Cached input is priced separately (cheap reads,
+        pricier writes); when a call reports its own exact cost, that figure is used instead of the
+        estimate. Days are UTC.
       </p>
 
       {empty ? (
@@ -124,13 +126,14 @@ export function CostsPage() {
 
           {selected.totals.unpricedCalls > 0 && (
             <p className="costs-note costs-warn">
-              {selected.totals.unpricedCalls} call{selected.totals.unpricedCalls === 1 ? '' : 's'} used
-              models without a pricing entry (
+              {selected.totals.unpricedCalls} call{selected.totals.unpricedCalls === 1 ? '' : 's'} had
+              neither a reported cost nor a pricing entry (
               {selected.byModel
-                .filter((m) => !m.priced)
+                .filter((m) => m.unpricedCalls > 0)
                 .map((m) => m.model)
                 .join(', ')}
-              ) and are counted at $0 — add rates via the <code>llm.pricing</code> setting.
+              ) and {selected.totals.unpricedCalls === 1 ? 'is' : 'are'} counted at $0 — add rates via the{' '}
+              <code>llm.pricing</code> setting.
             </p>
           )}
         </>
@@ -140,13 +143,14 @@ export function CostsPage() {
 }
 
 function StatTile({ label, totals }: { label: string; totals: CostTotals }) {
+  const cached = totals.cacheReadInputTokens + totals.cacheCreationInputTokens;
   return (
     <div className="stat-tile">
       <span className="stat-label">{label}</span>
       <span className="stat-value">{fmtUsd(totals.costUsd)}</span>
       <span className="stat-sub">
-        {totals.calls.toLocaleString('en-US')} calls · {fmtTokens(totals.inputTokens)} in ·{' '}
-        {fmtTokens(totals.outputTokens)} out
+        {totals.calls.toLocaleString('en-US')} calls · {fmtTokens(totals.inputTokens)} in
+        {cached > 0 ? ` (+${fmtTokens(cached)} cached)` : ''} · {fmtTokens(totals.outputTokens)} out
       </span>
     </div>
   );
@@ -253,6 +257,7 @@ function CategoryTable({ window: w }: { window: CostWindow }) {
             <th className="num">cost</th>
             <th className="num">share</th>
             <th className="num">in</th>
+            <th className="num">cached</th>
             <th className="num">out</th>
             <th className="num">calls</th>
           </tr>
@@ -278,6 +283,7 @@ function CategoryTable({ window: w }: { window: CostWindow }) {
               <td className="num">{fmtUsd(t.costUsd)}</td>
               <td className="num">{total > 0 ? `${Math.round((t.costUsd / total) * 100)}%` : '—'}</td>
               <td className="num">{fmtTokens(t.inputTokens)}</td>
+              <td className="num">{fmtTokens(t.cacheReadInputTokens + t.cacheCreationInputTokens)}</td>
               <td className="num">{fmtTokens(t.outputTokens)}</td>
               <td className="num">{t.calls.toLocaleString('en-US')}</td>
             </tr>
@@ -308,25 +314,38 @@ function ModelTable({
               <th className="num">rate in/out ($/MTok)</th>
               <th className="num">cost</th>
               <th className="num">in</th>
+              <th className="num">cached</th>
               <th className="num">out</th>
               <th className="num">calls</th>
             </tr>
           </thead>
           <tbody>
-            {w.byModel.map((m) => (
-              <tr key={m.model}>
-                <td className="mono">{m.model}</td>
-                <td className="num">
-                  {m.priced && pricing[m.model]
-                    ? `${pricing[m.model]!.inputPerMTok} / ${pricing[m.model]!.outputPerMTok}`
-                    : 'no pricing'}
-                </td>
-                <td className="num">{m.priced ? fmtUsd(m.costUsd) : '—'}</td>
-                <td className="num">{fmtTokens(m.inputTokens)}</td>
-                <td className="num">{fmtTokens(m.outputTokens)}</td>
-                <td className="num">{m.calls.toLocaleString('en-US')}</td>
-              </tr>
-            ))}
+            {w.byModel.map((m) => {
+              const rate = pricing[m.model];
+              return (
+                <tr key={m.model}>
+                  <td className="mono">{m.model}</td>
+                  <td className="num">
+                    {rate ? (
+                      <>
+                        {rate.inputPerMTok} / {rate.outputPerMTok}
+                        <br />
+                        <span className="muted">
+                          cache {rate.cacheReadPerMTok} rd / {rate.cacheCreationPerMTok} wr
+                        </span>
+                      </>
+                    ) : (
+                      'no pricing'
+                    )}
+                  </td>
+                  <td className="num">{m.priced ? fmtUsd(m.costUsd) : '—'}</td>
+                  <td className="num">{fmtTokens(m.inputTokens)}</td>
+                  <td className="num">{fmtTokens(m.cacheReadInputTokens + m.cacheCreationInputTokens)}</td>
+                  <td className="num">{fmtTokens(m.outputTokens)}</td>
+                  <td className="num">{m.calls.toLocaleString('en-US')}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

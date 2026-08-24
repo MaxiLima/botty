@@ -55,6 +55,31 @@ describe('MockLlmClient !tool trigger', () => {
     expect(res.text).toContain(tasks[0]!.id);
   });
 
+  it('set_reminder inserts an explicit commitment at the exact UTC instant', async () => {
+    const { db, events, turn } = await setup();
+    const res = await turn(
+      '!tool set_reminder {"description":"write to Ana about the renewal","dueAt":"2030-01-01T16:45:00-03:00"}',
+    );
+
+    const toolUse = events.find((e) => e.type === 'tool_use');
+    expect(toolUse).toEqual({ type: 'tool_use', name: 'set_reminder', summary: 'write to Ana about the renewal' });
+
+    const open = db.openCommitments();
+    expect(open).toHaveLength(1);
+    expect(open[0]!.kind).toBe('explicit');
+    expect(open[0]!.dueAt).toBe('2030-01-01T19:45:00.000Z'); // offset normalized to UTC
+    expect(res.text).toContain('"reminderId"');
+  });
+
+  it('set_reminder rejects a past dueAt without inserting anything', async () => {
+    const { db, turn } = await setup();
+    const res = await turn(
+      '!tool set_reminder {"description":"too late","dueAt":"2020-01-01T00:00:00Z"}',
+    );
+    expect(res.text).toContain('must be in the future');
+    expect(db.openCommitments()).toHaveLength(0);
+  });
+
   it('unknown tool name yields a readable text reply, no tool_use event', async () => {
     const { events, turn } = await setup();
     const res = await turn('!tool frobnicate {"x":1}');
@@ -94,6 +119,74 @@ describe('MockLlmClient !tool trigger', () => {
     expect(toolUse?.payload).toMatchObject({ name: 'capture_task', summary: 'ship the report' });
     expect(events.some((e) => e.type === 'tasks.updated')).toBe(true);
     expect(db.listTasks('open').some((t) => t.description === 'ship the report')).toBe(true);
+  });
+
+  // H8 (chat path): task_action used to be a hand-mirrored copy of the REST route's
+  // switch that recorded nothing on the answered surface, so the 24h sweep marked an
+  // acted-on nudge 'expired' even though the user just acted on it via chat. Mirrors
+  // the server/routes.ts POST /api/tasks/:id/action fix and its test coverage.
+  describe('task_action records a response on the answered proactive surface (H8, chat path)', () => {
+    it('done → completed', async () => {
+      const { db, turn } = await setup();
+      const t = db.insertTask({ description: 'ship the report', source: 'slack' })!;
+      const surface = db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"done"}`);
+      const row = db.surfacesForTask(t.id, 1)[0]!;
+      expect(row.id).toBe(surface.id);
+      expect(row.responseType).toBe('completed');
+      expect(row.responseReason).toBe('chat: task_action done');
+    });
+
+    it('snooze → snoozed', async () => {
+      const { db, turn } = await setup();
+      const t = db.insertTask({ description: 'follow up with vendor', source: 'slack' })!;
+      const surface = db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"snooze","snoozeDays":1}`);
+      const row = db.surfacesForTask(t.id, 1)[0]!;
+      expect(row.id).toBe(surface.id);
+      expect(row.responseType).toBe('snoozed');
+      expect(row.responseReason).toBe('chat: task_action snooze');
+    });
+
+    it('dismiss → dismissed', async () => {
+      const { db, turn } = await setup();
+      const t = db.insertTask({ description: 'stale ask', source: 'slack' })!;
+      const surface = db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"dismiss"}`);
+      const row = db.surfacesForTask(t.id, 1)[0]!;
+      expect(row.id).toBe(surface.id);
+      expect(row.responseType).toBe('dismissed');
+    });
+
+    it('reopen and priority are not answers to a nudge → record nothing', async () => {
+      const { db, turn } = await setup();
+      const t = db.insertTask({ description: 'reopen me', source: 'slack' })!;
+      db.updateTask(t.id, { status: 'done', doneAt: new Date().toISOString() }, 'test');
+      const surface = db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"reopen"}`);
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"priority","priority":1}`);
+      const row = db.surfacesForTask(t.id, 1)[0]!;
+      expect(row.id).toBe(surface.id);
+      expect(row.responseType).toBeNull();
+    });
+
+    it('no recent surface for the task → records nothing (no fabricated response)', async () => {
+      const { db, turn } = await setup();
+      const t = db.insertTask({ description: 'no surface for this one', source: 'slack' })!;
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"done"}`);
+      expect(db.surfacesForTask(t.id, 1)).toEqual([]);
+    });
+
+    it('a surface that already has a response is not overwritten', async () => {
+      const { db, turn } = await setup();
+      const t = db.insertTask({ description: 'already answered', source: 'slack' })!;
+      const surface = db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+      db.setProactiveResponse(surface.id, 'completed', 'chat: already answered');
+      await turn(`!tool task_action {"taskId":"${t.id}","action":"dismiss"}`);
+      const row = db.surfacesForTask(t.id, 1)[0]!;
+      expect(row.responseType).toBe('completed');
+      expect(row.responseReason).toBe('chat: already answered');
+    });
   });
 });
 
@@ -140,6 +233,56 @@ describe('SdkLlmClient chat tool wiring', () => {
     expect(Object.keys(calls[0]!.options.mcpServers as Record<string, unknown>)).toEqual([CHAT_TOOL_SERVER]);
   });
 
+  it('de-dupes colliding tool names before the factory runs, so a name collision never throws (finding 3)', async () => {
+    const calls: { options: Record<string, unknown> }[] = [];
+    const queryFn: QueryFn = ({ options }) => {
+      calls.push({ options: options ?? {} });
+      const messages = okStream();
+      return { async *[Symbol.asyncIterator]() { yield* messages; } };
+    };
+    // Mirrors the real SDK's McpServer.tool(), which throws `Tool X is already
+    // registered` on a duplicate name — the exact crash this fix guards against.
+    const factoryArgs: ChatToolSpec[][] = [];
+    const factory: ToolServerFactory = (tools) => {
+      factoryArgs.push(tools);
+      const seen = new Set<string>();
+      for (const t of tools) {
+        if (seen.has(t.name)) throw new Error(`Tool ${t.name} is already registered`);
+        seen.add(t.name);
+      }
+      return {
+        mcpServers: { [CHAT_TOOL_SERVER]: { type: 'sdk' } },
+        allowedTools: tools.map((t) => `mcp__${CHAT_TOOL_SERVER}__${t.name}`),
+      };
+    };
+    const { db, client } = makeClient(queryFn, factory);
+    const spec = (name: string): ChatToolSpec => ({
+      name,
+      description: name,
+      inputSchema: {},
+      summarize: () => name,
+      execute: async () => ({}),
+    });
+    // Two different external MCP servers independently producing the same
+    // `${server}_${tool}` composed name (mcp/tools.ts) — this must not throw.
+    const colliding = [spec('gcal_list_events'), spec('gcal_list_events')];
+    const session = db.createSession();
+    const res = await client.chatTurn({
+      sessionKey: session.id,
+      prompt: 'hi',
+      systemPrompt: 'sys',
+      tools: colliding,
+      onEvent: () => {},
+    });
+
+    expect(res.text).toBe('ok');
+    expect(factoryArgs[0]!.map((t) => t.name)).toEqual(['gcal_list_events', 'gcal_list_events_2']);
+    expect(calls[0]!.options.allowedTools).toEqual([
+      'mcp__botty__gcal_list_events',
+      'mcp__botty__gcal_list_events_2',
+    ]);
+  });
+
   it('omits tool wiring when no factory is injected (tool-less chat still works)', async () => {
     const calls: { options: Record<string, unknown> }[] = [];
     const queryFn: QueryFn = ({ options }) => {
@@ -182,6 +325,62 @@ describe('SdkLlmClient chat tool wiring', () => {
     expect(toolEvents[0]).toEqual({ type: 'tool_use', name: 'capture_task', summary: 'buy milk' });
     // Unknown names pass through untouched, no summary.
     expect(toolEvents[1]).toEqual({ type: 'tool_use', name: 'SomeOtherTool' });
+  });
+
+  // Appendix C ("likely, needs repro"): a text → tool_use → text reply spans
+  // TWO assistant messages within one turn (num_turns > 1). The SDK's own
+  // 'result' message historically carries only the FINAL assistant message's
+  // text, which would silently drop the first segment from what gets saved —
+  // even though the client already saw both segments stream via chat.chunk.
+  it('a multi-segment reply (text → tool → text) keeps the FIRST segment, not just the last', async () => {
+    const queryFn: QueryFn = () => {
+      const messages: SdkMessageLike[] = [
+        { type: 'system', subtype: 'init', session_id: 'prov-multi' },
+        {
+          type: 'stream_event',
+          session_id: 'prov-multi',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Let me check that — ' } },
+        },
+        {
+          type: 'assistant',
+          session_id: 'prov-multi',
+          message: { content: [{ type: 'tool_use', name: 'mcp__botty__capture_task', input: { description: 'x' } }] },
+        },
+        {
+          type: 'stream_event',
+          session_id: 'prov-multi',
+          event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'done, tracked it.' } },
+        },
+        // Mirrors the real SDK: `result` on a multi-turn (num_turns > 1) call
+        // carries only the LAST assistant message's text.
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'prov-multi',
+          is_error: false,
+          result: 'done, tracked it.',
+          usage: { input_tokens: 4, output_tokens: 6 },
+        },
+      ];
+      return { async *[Symbol.asyncIterator]() { yield* messages; } };
+    };
+    const { db, client } = makeClient(queryFn, () => ({ mcpServers: {}, allowedTools: [] }));
+    const tools = makeTools(db);
+    const session = db.createSession();
+    const chunks: string[] = [];
+    const res = await client.chatTurn({
+      sessionKey: session.id,
+      prompt: 'track something for me',
+      systemPrompt: 'sys',
+      tools,
+      onEvent: (e) => e.type === 'text' && chunks.push(e.text),
+    });
+
+    // What the client saw stream, live, in order.
+    expect(chunks.join('')).toBe('Let me check that — done, tracked it.');
+    // What gets saved/returned must match — not just the trailing segment.
+    expect(res.text).toBe('Let me check that — done, tracked it.');
+    expect(res.text).toContain('Let me check that');
   });
 });
 
@@ -298,6 +497,7 @@ describe('loadSdkToolServerFactory (real Agent SDK)', () => {
     expect(wiring.allowedTools).toEqual([
       'mcp__botty__capture_task',
       'mcp__botty__task_action',
+      'mcp__botty__set_reminder',
       'mcp__botty__memory_search',
       'mcp__botty__session_search',
     ]);

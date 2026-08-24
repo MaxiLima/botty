@@ -47,8 +47,18 @@ export function executeActions(
   const mac = deps.macNotifier ?? notifyMacos;
   const executed: ExecutedAction[] = [];
   const touched = new Set<string>();
+  // Defense in depth: loop/judgment.ts's validateJudgment already dedupes
+  // duplicate (taskId, type) actions and records the drop, but this loop is
+  // the only place that actually mutates surface_count / task_history, so it
+  // guards itself too — any caller that skips validateJudgment still can't
+  // double-fire a notify or double-write a snooze/priority for the same task.
+  const appliedKinds = new Set<string>();
 
   for (const action of actions) {
+    const kind = `${action.taskId} ${action.type}`;
+    if (appliedKinds.has(kind)) continue;
+    appliedKinds.add(kind);
+
     const task = db.getTask(action.taskId);
     // Re-check status: the judgment LLM call takes seconds, during which the
     // resolution sweep or the user may have closed the task — never resurrect

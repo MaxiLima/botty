@@ -202,9 +202,24 @@
   background: rgba(251, 191, 36, 0.12);
   color: var(--amber);
 }
-.kind-chat {
+/* ai_decisions.kind is 'chat_turn', not 'chat' — see DECISION_KINDS in
+ * InspectorPage.tsx. */
+.kind-chat_turn {
   background: rgba(244, 114, 182, 0.12);
   color: var(--pink);
+}
+.kind-resolution {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--green);
+}
+.kind-seal,
+.kind-distill {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.kind-fetch {
+  background: rgba(103, 232, 249, 0.1);
+  color: var(--cyan);
 }
 .decision-row {
   padding: 4px 8px;

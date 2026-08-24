@@ -89,6 +89,12 @@ function broadcastHeartbeatChanged(bus: ReturnType<typeof createBus>): void {
 describe('loop scheduler — duplicate timer chains on config hot-reload', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    // Pin "now" well before either default brief time (08:45/18:00) so the
+    // briefing wall-clock poller (checkBriefings, loop/index.ts) — which
+    // fires once synchronously on start() as boot catch-up — never fires
+    // spuriously depending on whatever the real wall-clock happens to be
+    // when this suite runs. 2026-07-01 is a Wednesday (an active day).
+    vi.setSystemTime(new Date('2026-07-01T07:00:00'));
     runTickMock.mockReset();
     runResolutionSweepMock.mockReset();
     runBriefingMock.mockReset();
@@ -273,5 +279,263 @@ describe('loop scheduler — duplicate timer chains on config hot-reload', () =>
     expect(runBriefingMock).not.toHaveBeenCalled();
 
     loop.stop();
+  });
+});
+
+/**
+ * Finding #3 (2026-08-21 full-test-run report): a heartbeat.md hot-reload
+ * used to unconditionally clearTimeout + reschedule the tick/sweep timers
+ * from "now", so an editor autosaving every few seconds could reset the
+ * deadline forever and the scheduled tick would never actually fire. The fix
+ * only re-arms when the fields that affect the arm time (interval,
+ * working_hours, active_days) actually changed — an unrelated field edit (or
+ * a byte-identical autosave) must leave the existing deadline untouched.
+ */
+describe('loop scheduler — heartbeat.md hot-reload preserves deadlines when timing is unchanged', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-01T07:00:00'));
+    runTickMock.mockReset();
+    runResolutionSweepMock.mockReset();
+    runBriefingMock.mockReset();
+    runResolutionSweepMock.mockResolvedValue({ checked: 0, closed: [], skipped: [] });
+    runBriefingMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a config.changed with no timing change does not reset the tick deadline', async () => {
+    const hb = heartbeat({ tickIntervalMin: 20 });
+    const { ctx, bus } = makeCtx(hb);
+    runTickMock.mockResolvedValue('tick-1');
+    const loop = createLoop(ctx);
+    loop.start();
+
+    // 3/4 of the way through the interval...
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(runTickMock).not.toHaveBeenCalled();
+
+    // ...an editor autosaves heartbeat.md repeatedly with nothing timing-relevant changed.
+    broadcastHeartbeatChanged(bus);
+    broadcastHeartbeatChanged(bus);
+    broadcastHeartbeatChanged(bus);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runTickMock).not.toHaveBeenCalled();
+
+    // The original deadline (20 min from start) must still hold: if a reload
+    // had reset it from t=15min, this remaining 5 min would NOT be enough.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(runTickMock).toHaveBeenCalledTimes(1);
+
+    loop.stop();
+  });
+
+  it('a config.changed that DOES change tick_interval_min re-arms with the new cadence', async () => {
+    const hb = heartbeat({ tickIntervalMin: 20 });
+    const { ctx, bus } = makeCtx(hb);
+    runTickMock.mockResolvedValue('tick-1');
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(runTickMock).not.toHaveBeenCalled();
+
+    hb.tickIntervalMin = 5; // the object createLoop reads via config.heartbeat() is mutated in place
+    broadcastHeartbeatChanged(bus);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runTickMock).not.toHaveBeenCalled(); // re-arm itself doesn't fire anything synchronously
+
+    // Re-armed from now (t=15min) with the NEW 5-minute interval.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(runTickMock).toHaveBeenCalledTimes(1);
+
+    loop.stop();
+  });
+
+  it('same preserve/re-arm behavior applies to the resolution sweep timer', async () => {
+    const hb = heartbeat({ resolutionSweepIntervalMin: 15 });
+    const { ctx, bus } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(runResolutionSweepMock).not.toHaveBeenCalled();
+
+    // No timing-relevant change: deadline must be preserved.
+    broadcastHeartbeatChanged(bus);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(runResolutionSweepMock).toHaveBeenCalledTimes(1);
+
+    loop.stop();
+  });
+});
+
+/**
+ * Finding #4: replace one long-lived setTimeout per briefing kind (up to
+ * ~14h — fragile across laptop sleep and TZ changes) with a cheap wall-clock
+ * poll. Also covers the "no missed-briefing catch-up" LOW gap: a target
+ * already passed before boot must fire immediately, not wait until tomorrow.
+ */
+describe('loop scheduler — briefing wall-clock poll (fire/skip/catch-up)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // 2026-07-01 07:00 local — a Wednesday, before every *_brief_at used below.
+    vi.setSystemTime(new Date('2026-07-01T07:00:00'));
+    runTickMock.mockReset();
+    runResolutionSweepMock.mockReset();
+    runBriefingMock.mockReset();
+    runTickMock.mockResolvedValue('tick-1');
+    runResolutionSweepMock.mockResolvedValue({ checked: 0, closed: [], skipped: [] });
+    runBriefingMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not fire before the wall clock reaches *_brief_at', async () => {
+    const hb = heartbeat({ morningBriefAt: '08:45' });
+    const { ctx } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(60 * 60_000); // 07:00 -> 08:00, still before 08:45
+    expect(runBriefingMock).not.toHaveBeenCalled();
+
+    loop.stop();
+  });
+
+  it('fires within one poll cycle of *_brief_at being reached', async () => {
+    const hb = heartbeat({ morningBriefAt: '08:45' });
+    const { ctx } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(105 * 60_000); // 07:00 -> 08:45
+    await vi.advanceTimersByTimeAsync(60_000); // one more poll cycle to be sure
+    expect(runBriefingMock).toHaveBeenCalledTimes(1);
+    expect(runBriefingMock).toHaveBeenCalledWith(expect.anything(), 'morning_brief');
+
+    loop.stop();
+  });
+
+  it('does not re-fire the same kind again later the same day', async () => {
+    // Tick/sweep given a huge (but still clamped, see the next describe
+    // block) interval purely to keep this test fast under fake timers — this
+    // test is about the briefing poller only, not tick/sweep cadence.
+    const hb = heartbeat({ morningBriefAt: '08:45', tickIntervalMin: 100_000, resolutionSweepIntervalMin: 100_000 });
+    const { ctx } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(120 * 60_000); // past 08:45
+    expect(runBriefingMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(3 * 3_600_000); // many more poll cycles, same day
+    expect(runBriefingMock).toHaveBeenCalledTimes(1);
+
+    loop.stop();
+  }, 15_000);
+
+  it('skips (does not deliver) when the target is reached outside working hours', async () => {
+    const hb = heartbeat({
+      workingHours: { start: '09:00', end: '17:00' },
+      eveningBriefAt: '18:00',
+      tickIntervalMin: 100_000,
+      resolutionSweepIntervalMin: 100_000,
+    });
+    const { ctx } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(11 * 3_600_000); // 07:00 -> 18:00
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runBriefingMock).not.toHaveBeenCalled();
+
+    loop.stop();
+  }, 15_000);
+
+  it('a *_brief_at edited via heartbeat.md is picked up on the next poll — no re-arm call needed', async () => {
+    const hb = heartbeat({ morningBriefAt: '10:00' });
+    const { ctx, bus } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000); // 07:00 -> 07:15, nowhere near either time
+    expect(runBriefingMock).not.toHaveBeenCalled();
+
+    hb.morningBriefAt = '07:20'; // edited to an imminent time
+    broadcastHeartbeatChanged(bus); // no special handling for briefings; polling just re-reads config
+
+    await vi.advanceTimersByTimeAsync(6 * 60_000); // cross 07:20 plus a poll cycle
+    expect(runBriefingMock).toHaveBeenCalledTimes(1);
+    expect(runBriefingMock).toHaveBeenCalledWith(expect.anything(), 'morning_brief');
+
+    loop.stop();
+  });
+
+  it('boot catch-up: a target already passed before start() fires immediately, not tomorrow', async () => {
+    const hb = heartbeat({ morningBriefAt: '06:00' }); // "now" is pinned to 07:00 — already past
+    const { ctx } = makeCtx(hb);
+    const loop = createLoop(ctx);
+    loop.start();
+
+    await vi.advanceTimersByTimeAsync(0); // let the fire-and-forget delivery settle
+    expect(runBriefingMock).toHaveBeenCalledTimes(1);
+    expect(runBriefingMock).toHaveBeenCalledWith(expect.anything(), 'morning_brief');
+
+    loop.stop();
+  });
+});
+
+/**
+ * Finding #2: `tick_interval_min` / `resolution_sweep_interval_min` become a
+ * raw `setTimeout` delay. Node silently wraps any delay above 2^31-1 ms
+ * (~35791 min) to ~1ms instead of erroring — an unbounded interval would
+ * otherwise turn "tick every N minutes" into a hot ~1ms loop with real
+ * judgment calls. parseHeartbeat clamps at the config layer (see
+ * config/parse.ts tests); this locks in the scheduler's OWN defense-in-depth
+ * clamp, which must hold even if a HeartbeatConfig reaches it unclamped.
+ */
+describe('loop scheduler — huge intervals never reach setTimeout unclamped', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-01T07:00:00'));
+    runTickMock.mockReset();
+    runResolutionSweepMock.mockReset();
+    runBriefingMock.mockReset();
+    runTickMock.mockResolvedValue('tick-1');
+    runResolutionSweepMock.mockResolvedValue({ checked: 0, closed: [], skipped: [] });
+    runBriefingMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('every setTimeout delay armed by the loop stays well under the ms overflow threshold', async () => {
+    const hb = heartbeat({
+      tickIntervalMin: 999_999_999,
+      resolutionSweepIntervalMin: 999_999_999,
+    });
+    const { ctx } = makeCtx(hb);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+    const loop = createLoop(ctx);
+    loop.start();
+
+    const delays = setTimeoutSpy.mock.calls.map((call) => call[1] as number);
+    expect(delays.length).toBeGreaterThan(0);
+    for (const d of delays) {
+      // Node's actual overflow threshold is 2^31-1 (2_147_483_647) ms.
+      expect(d).toBeLessThan(2_147_483_647);
+      // The loop's own ceiling (MAX_TIMER_DELAY_MS = 7 days) — comfortably clear of it.
+      expect(d).toBeLessThanOrEqual(7 * 24 * 60 * 60_000);
+    }
+
+    loop.stop();
+    setTimeoutSpy.mockRestore();
   });
 });

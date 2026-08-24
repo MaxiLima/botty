@@ -1,5 +1,6 @@
 import type { Commitment } from '@botty/shared';
 import type { Bus } from '../bus/index.js';
+import { defaultTimeZone, formatLocalIsoWithOffset } from '../chat/commitments.js';
 import type { Db } from '../db/index.js';
 import type { ExecutedAction } from './actions.js';
 import type { JudgmentAction } from './judgment.js';
@@ -32,10 +33,16 @@ export function commitmentCandidateId(c: Pick<Commitment, 'id'>): string {
 }
 
 /**
- * Due commitments eligible for this tick: open, due, past the echo-back min-age
- * guard (a commitment can't notify moments after it was created), capped by the
- * remaining maxPerDay delivery budget. Over-cap commitments simply aren't
+ * Due INFERRED commitments eligible for this tick: open, due, past the echo-back
+ * min-age guard (a commitment can't notify moments after it was created), capped
+ * by the remaining maxPerDay delivery budget. Over-cap commitments simply aren't
  * offered this tick — they stay open and are reconsidered on a later one.
+ * Explicit reminders (kind='explicit', set_reminder tool) never ride judgment —
+ * they're delivered exactly on time by loop/reminders.ts — and, per H10a
+ * (2026-08-21 report), they don't spend this budget either: maxPerDay is an
+ * anti-nag cap on botty's OWN inferred follow-ups, not a quota on reminders the
+ * user explicitly asked for. Counting them let three "remind me in 2 minutes"
+ * calls silence every inferred commitment for 24h.
  */
 export function eligibleCommitments(
   db: Db,
@@ -45,8 +52,12 @@ export function eligibleCommitments(
   const nowMs = Date.parse(now);
   const due = db
     .dueCommitments(now)
+    .filter((c) => c.kind === 'inferred')
     .filter((c) => nowMs - Date.parse(c.createdAt) >= opts.minAgeMin * 60_000);
-  const deliveredToday = db.countCommitmentDeliveriesSince(new Date(nowMs - 24 * 3_600_000).toISOString());
+  const deliveredToday = db.countCommitmentDeliveriesSince(
+    new Date(nowMs - 24 * 3_600_000).toISOString(),
+    'inferred',
+  );
   const remaining = Math.max(0, opts.maxPerDay - deliveredToday);
   return due.slice(0, remaining);
 }
@@ -56,7 +67,10 @@ export function eligibleCommitments(
  * Descriptions are ingested (conversation-derived) content — wrapped in the
  * untrusted boundary markers, unlike buildChecklistContext's trusted items.
  */
-export function buildCommitmentContext(due: Commitment[]): string {
+export function buildCommitmentContext(
+  due: Commitment[],
+  timeZone: string = defaultTimeZone(),
+): string {
   const lines = [
     `## Due inferred commitments (${due.length})`,
     'These are short-lived follow-ups botty inferred from earlier conversation (e.g. "my',
@@ -74,7 +88,9 @@ export function buildCommitmentContext(due: Commitment[]): string {
     lines.push(
       '',
       `### Commitment ${commitmentCandidateId(c)}`,
-      `due: ${c.dueAt}`,
+      // Local wall-clock + offset (H1 bugfix) — a bare UTC due instant here
+      // could get echoed verbatim into a user-facing notify message.
+      `due: ${formatLocalIsoWithOffset(c.dueAt, timeZone)}`,
       UNTRUSTED_OPEN,
       `description: ${c.description.replace(/\s+/g, ' ').trim()}`,
       UNTRUSTED_CLOSE,
@@ -88,7 +104,8 @@ export function buildCommitmentContext(due: Commitment[]): string {
  * (no task id, surface_kind 'commitment') + WS notification + macOS banner, then
  * markCommitmentDelivered. Non-notify commitment actions never reach here
  * (validateJudgment drops them). Delivered commitments count toward maxPerDay
- * via countCommitmentDeliveriesSince.
+ * via countCommitmentDeliveriesSince(since, 'inferred') — only inferred ones,
+ * never explicit reminders (H10a).
  */
 export function executeCommitmentNotifies(
   deps: { db: Db; bus: Bus; macNotifier?: MacNotifier },

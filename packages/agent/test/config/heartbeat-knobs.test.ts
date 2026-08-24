@@ -102,6 +102,72 @@ describe('parseHeartbeat — promoted behavior knobs', () => {
   });
 });
 
+/**
+ * Loop timers finding #2 (2026-08-21 full-test-run report): `tick_interval_min`
+ * and `resolution_sweep_interval_min` become raw `setTimeout` delays in
+ * loop/index.ts. Node silently wraps any delay above 2^31-1 ms (~35791 min) to
+ * ~1ms instead of erroring, so an unbounded/huge interval turns "tick every N
+ * minutes" into "tick every ~1ms, forever, with real judgment calls." Zero is
+ * dangerous the same way (busy-loop). `session_idle_seal_min: 0` was the LOW
+ * companion finding in the same code.
+ */
+describe('parseHeartbeat — bounded interval knobs (setTimeout overflow guard)', () => {
+  // tick_interval_min lives under '## Schedule'; the other two under '## Behavior'.
+  const boundedKnobs: {
+    key: string;
+    field: keyof ReturnType<typeof parseHeartbeat>;
+    section: (line: string) => string;
+  }[] = [
+    {
+      key: 'tick_interval_min',
+      field: 'tickIntervalMin',
+      section: (line) => ['## Schedule', line].join('\n'),
+    },
+    {
+      key: 'resolution_sweep_interval_min',
+      field: 'resolutionSweepIntervalMin',
+      section: behavior,
+    },
+    { key: 'session_idle_seal_min', field: 'sessionIdleSealMin', section: behavior },
+  ];
+
+  it.each(boundedKnobs)('$key: a normal value parses clean', ({ key, field, section }) => {
+    const cfg = parseHeartbeat(section(`${key}: 25`), 'sim');
+    expect(cfg[field]).toBe(25);
+    expect(cfg.warnings).toEqual([]);
+  });
+
+  it.each(boundedKnobs)('$key: 0 is clamped up to 1, with a warning', ({ key, field, section }) => {
+    const cfg = parseHeartbeat(section(`${key}: 0`), 'sim');
+    expect(cfg[field]).toBe(1);
+    expect(cfg.warnings.some((w) => w.includes(key))).toBe(true);
+  });
+
+  it.each(boundedKnobs)('$key: negative is clamped up to 1, with a warning', ({ key, field, section }) => {
+    const cfg = parseHeartbeat(section(`${key}: -5`), 'sim');
+    expect(cfg[field]).toBe(1);
+    expect(cfg.warnings.some((w) => w.includes(key))).toBe(true);
+  });
+
+  it.each(boundedKnobs)(
+    '$key: an absurdly large value (would overflow setTimeout) is clamped to the 7-day ceiling',
+    ({ key, field, section }) => {
+      const cfg = parseHeartbeat(section(`${key}: 999999999`), 'sim');
+      expect(cfg[field]).toBe(10_080);
+      expect(cfg.warnings.some((w) => w.includes(key))).toBe(true);
+      // The clamped value must stay well under Node's setTimeout int32 overflow
+      // threshold (~35791 minutes) so it can never wrap to a ~1ms hot loop.
+      expect(cfg[field] as number).toBeLessThan(35_791);
+    },
+  );
+
+  it.each(boundedKnobs)('$key: non-numeric still warns and keeps the default', ({ key, field, section }) => {
+    const cfg = parseHeartbeat(section(`${key}: banana`), 'sim');
+    expect(cfg[field]).toBe(HEARTBEAT_DEFAULTS[field as keyof typeof HEARTBEAT_DEFAULTS]);
+    expect(cfg.warnings.some((w) => w.includes(key))).toBe(true);
+  });
+});
+
 describe("parseHeartbeat — '## Tasks' checklist section", () => {
   it('parses bullets with m/h/d intervals into stable-id checklist tasks', () => {
     const md = [

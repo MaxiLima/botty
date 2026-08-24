@@ -1,3 +1,8 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { migrationsDir } from '@botty/shared/migrations-dir';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { Db } from '../src/db/index.js';
 
@@ -11,7 +16,14 @@ describe('Db', () => {
     const versions = db.raw.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {
       version: number;
     }[];
-    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it('insertAiDecision without cache/cost fields stores NULL, not 0', () => {
+    const decision = db.insertAiDecision({ kind: 'chat_turn', input: {}, model: 'claude-sonnet-5' });
+    expect(decision.cacheReadInputTokens).toBeNull();
+    expect(decision.cacheCreationInputTokens).toBeNull();
+    expect(decision.totalCostUsd).toBeNull();
   });
 
   it('people round-trip: team upsert derives tier from weight and updates in place', () => {
@@ -31,6 +43,10 @@ describe('Db', () => {
     expect(db.findPersonByActor({ handle: '@sofi' })?.name).toBe('Sofi');
     expect(db.findPersonByActor({ email: 'SOFI@acme.example' })?.name).toBe('Sofi');
     expect(db.findPersonByActor({ displayName: 'sofi' })?.name).toBe('Sofi');
+    // Slack renders the same actor as @Diego or @diego depending on where the
+    // mention came from — a case-sensitive compare demoted a Tier-1 teammate.
+    expect(db.findPersonByActor({ handle: 'Sofi' })?.name).toBe('Sofi');
+    expect(db.findPersonByActor({ handle: '@SOFI' })?.name).toBe('Sofi');
     expect(db.findPersonByActor({ handle: 'nobody' })).toBeUndefined();
   });
 
@@ -158,6 +174,76 @@ describe('Db', () => {
     expect(db.getTask(t.id)?.status).toBe('open');
   });
 
+  // H3: unsnoozeDue's reopen is a one-shot status flip — snoozeExpiredTasks
+  // is the durable signal candidates.ts relies on, so it must survive across
+  // ticks and clear itself only once the task is actually surfaced again.
+  describe('snoozeExpiredTasks', () => {
+    it('flags a task reopened by unsnoozeDue and not yet surfaced', () => {
+      const t = db.insertTask({ description: 'snoozed one', source: 'manual' })!;
+      db.updateTask(t.id, { status: 'snoozed', snoozeUntil: '2026-07-01T00:00:00Z' }, 'user');
+      db.unsnoozeDue('2026-07-04T00:00:00Z');
+      expect(db.snoozeExpiredTasks().map((x) => x.id)).toEqual([t.id]);
+    });
+
+    it('does not flag a task reopened directly by a user action (changed_by != loop)', () => {
+      const t = db.insertTask({ description: 'snoozed one', source: 'manual' })!;
+      db.updateTask(t.id, { status: 'snoozed', snoozeUntil: '2026-07-01T00:00:00Z' }, 'user');
+      // user cancels the snooze manually rather than letting it expire
+      db.updateTask(t.id, { status: 'open', snoozeUntil: null }, 'user');
+      expect(db.snoozeExpiredTasks()).toEqual([]);
+    });
+
+    it('clears once the task is surfaced again (recordSurface past the reopen)', () => {
+      const t = db.insertTask({ description: 'snoozed one', source: 'manual' })!;
+      db.updateTask(t.id, { status: 'snoozed', snoozeUntil: '2026-07-01T00:00:00Z' }, 'user');
+      db.unsnoozeDue('2026-07-04T00:00:00Z');
+      expect(db.snoozeExpiredTasks().map((x) => x.id)).toEqual([t.id]);
+
+      // task_history.changed_at (written by unsnoozeDue/updateTask) is always
+      // real wall-clock time regardless of the logical `now` passed in above —
+      // so surface at the (later) real "now" to clear the flag, same as a real
+      // tick would.
+      db.recordSurface(t.id);
+      expect(db.snoozeExpiredTasks()).toEqual([]);
+    });
+
+    it('does not flag a task that was never snoozed', () => {
+      db.insertTask({ description: 'plain task', source: 'manual' });
+      expect(db.snoozeExpiredTasks()).toEqual([]);
+    });
+  });
+
+  describe('elapsedMeetingPrepTasks', () => {
+    it('finds an open meeting-prep task whose meeting started >= graceMin ago', () => {
+      const t = db.insertTask({
+        description: 'Prep for meeting "Sync"',
+        source: 'gcal',
+        sourceRef: 'meeting_prep:evt-1',
+        dueDate: '2026-07-04T09:00:00.000Z',
+      })!;
+      // 20 min past start: inside a 30-min grace, not yet elapsed
+      expect(db.elapsedMeetingPrepTasks('2026-07-04T09:20:00.000Z', 30)).toEqual([]);
+      // 31 min past start: elapsed
+      expect(db.elapsedMeetingPrepTasks('2026-07-04T09:31:00.000Z', 30).map((x) => x.id)).toEqual([t.id]);
+    });
+
+    it('ignores non-meeting-prep tasks and already-closed prep tasks', () => {
+      db.insertTask({
+        description: 'unrelated due task',
+        source: 'manual',
+        dueDate: '2026-07-04T09:00:00.000Z',
+      });
+      const closed = db.insertTask({
+        description: 'Prep for meeting "Old"',
+        source: 'gcal',
+        sourceRef: 'meeting_prep:evt-2',
+        dueDate: '2026-07-04T09:00:00.000Z',
+      })!;
+      db.updateTask(closed.id, { status: 'cancelled' }, 'loop');
+      expect(db.elapsedMeetingPrepTasks('2026-07-04T10:00:00.000Z', 30)).toEqual([]);
+    });
+  });
+
   it('raw_log dedups on (source, external_id)', () => {
     expect(db.insertRawLog({ source: 'slack', externalId: 'e1', kind: 'dm', body: '{}', occurredAt: 'x' })).not.toBeNull();
     expect(db.insertRawLog({ source: 'slack', externalId: 'e1', kind: 'dm', body: '{}', occurredAt: 'x' })).toBeNull();
@@ -194,6 +280,41 @@ describe('Db', () => {
     const expired = db.expireSurfacesBefore('2999-01-01');
     expect(expired).toBe(1);
     expect(db.openSurfacesSince('2000-01-01')).toHaveLength(0);
+  });
+
+  it('expireSurfacesBefore only expires ANSWERABLE surfaces, never briefings/reminders', () => {
+    const t = db.insertTask({ description: 'nudge me', source: 'manual' })!;
+    db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'do it', score: 8 });
+    db.insertProactiveLog({ taskId: t.id, surfaceKind: 'meeting_prep', message: 'prep', score: 7 });
+    // no buttons, never classified by the tracker — an "expired" stamp here is
+    // an invented ignore signal (2026-08-21 report, LOW)
+    db.insertProactiveLog({ taskId: null, surfaceKind: 'reminder', message: 'Reminder: x' });
+    db.insertProactiveLog({ taskId: null, surfaceKind: 'morning_brief', message: '**Brief**' });
+    db.insertProactiveLog({ taskId: null, surfaceKind: 'commitment', message: 'interview' });
+
+    expect(db.expireSurfacesBefore('2999-01-01')).toBe(2);
+    const byKind = Object.fromEntries(
+      db.surfacesSince('2000-01-01').map((s) => [s.surfaceKind, s.responseType]),
+    );
+    expect(byKind).toEqual({
+      nudge: 'expired',
+      meeting_prep: 'expired',
+      reminder: null,
+      morning_brief: null,
+      commitment: null,
+    });
+  });
+
+  it('a second `done` keeps the original doneAt (no rewrite, no bogus history row)', () => {
+    const t = db.insertTask({ description: 'Close the loop', source: 'manual' })!;
+    db.updateTask(t.id, { status: 'done', doneAt: '2026-07-04T12:00:00Z' }, 'user');
+    const after = db.updateTask(t.id, { status: 'done', doneAt: '2026-07-05T09:00:00Z' }, 'user');
+    expect(after.doneAt).toBe('2026-07-04T12:00:00Z');
+    expect(db.taskHistory(t.id).filter((h) => h.field === 'doneAt')).toHaveLength(1);
+    // reopening and re-closing still stamps a fresh completion time
+    db.updateTask(t.id, { status: 'open', doneAt: null }, 'user');
+    const redone = db.updateTask(t.id, { status: 'done', doneAt: '2026-07-06T10:00:00Z' }, 'user');
+    expect(redone.doneAt).toBe('2026-07-06T10:00:00Z');
   });
 
   it('fts: index + bm25 search + join-back timestamps', () => {
@@ -297,5 +418,74 @@ describe('Db', () => {
     // older interaction does not regress it
     db.insertInteraction({ personId: p.id, source: 'slack', kind: 'dm', occurredAt: '2026-07-01T10:00:00Z' });
     expect(db.getPerson(p.id)?.lastInteractionAt).toBe('2026-07-04T10:00:00Z');
+  });
+});
+
+describe('migration 008 (ai_decisions cache/cost columns)', () => {
+  it('applies cleanly on top of a pre-existing 007 database, leaving the old row NULL', () => {
+    // Same precedent as db-fts-unindexed.test.ts's migration-003 test: build a raw DB
+    // frozen at the prior version, insert a row the old way, then apply just this
+    // migration and check the old row survives with the new columns NULL.
+    const raw = new Database(':memory:');
+    const files = fs
+      .readdirSync(migrationsDir)
+      .filter((f) => /^\d+_.+\.sql$/.test(f))
+      .sort();
+    const apply = (file: string) => raw.exec(fs.readFileSync(path.join(migrationsDir, file), 'utf8'));
+
+    for (const file of files.filter((f) => Number.parseInt(f, 10) < 8)) apply(file);
+    raw
+      .prepare(
+        `INSERT INTO ai_decisions (id, kind, input_json, model, input_tokens, output_tokens, created_at)
+         VALUES ('dec-1', 'chat_turn', '{}', 'claude-sonnet-5', 100, 50, '2026-07-08T00:00:00.000Z')`,
+      )
+      .run();
+
+    const migration8 = files.find((f) => Number.parseInt(f, 10) === 8);
+    expect(migration8).toBeDefined();
+    apply(migration8!);
+
+    const row = raw.prepare('SELECT * FROM ai_decisions WHERE id = ?').get('dec-1') as Record<string, unknown>;
+    expect(row.input_tokens).toBe(100);
+    expect(row.output_tokens).toBe(50);
+    expect(row.cache_read_input_tokens).toBeNull();
+    expect(row.cache_creation_input_tokens).toBeNull();
+    expect(row.total_cost_usd).toBeNull();
+    raw.close();
+  });
+
+  it('is idempotent — reopening an already-migrated on-disk DB does not re-run migration 008', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'botty-migration-008-test-'));
+    const dbPath = path.join(dir, 'botty.db');
+
+    const first = new Db(dbPath);
+    first.insertAiDecision({
+      kind: 'chat_turn',
+      input: {},
+      model: 'claude-sonnet-5',
+      inputTokens: 10,
+      cacheReadInputTokens: 900,
+      totalCostUsd: 0.0012,
+    });
+    first.close();
+
+    // Reopening runs migrate() again; version 8 is already tracked in schema_migrations
+    // so it must be skipped rather than re-applied (ALTER TABLE ADD COLUMN twice errors).
+    let second!: Db;
+    expect(() => {
+      second = new Db(dbPath);
+    }).not.toThrow();
+    const versions = second.raw.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {
+      version: number;
+    }[];
+    expect(versions.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+
+    const rows = second.listAiDecisions();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.cacheReadInputTokens).toBe(900);
+    expect(rows[0]!.totalCostUsd).toBeCloseTo(0.0012);
+    second.close();
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

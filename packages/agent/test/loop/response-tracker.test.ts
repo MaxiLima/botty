@@ -6,6 +6,7 @@ import {
   classifyMessage,
   createResponseTracker,
   keywordsFor,
+  mostRecentAnswerableSurface,
   type SurfaceWithTask,
 } from '../../src/loop/response-tracker.js';
 
@@ -126,5 +127,54 @@ describe('createResponseTracker (bus + db integration)', () => {
     const tracker = createResponseTracker({ db, bus });
     const res = tracker.handleMessage('quarterly report done', new Date().toISOString());
     expect(res).toEqual([]);
+  });
+});
+
+describe('mostRecentAnswerableSurface (shared by REST task_action route)', () => {
+  let db: Db;
+  beforeEach(() => {
+    db = new Db(':memory:');
+  });
+
+  it('returns the task\'s most recent unanswered, in-window surface', () => {
+    const task = db.insertTask({ description: 'ship the report', source: 'manual' })!;
+    const older = db.insertProactiveLog({
+      taskId: task.id,
+      surfaceKind: 'nudge',
+      message: 'first nudge',
+      surfacedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    });
+    const newer = db.insertProactiveLog({
+      taskId: task.id,
+      surfaceKind: 'nudge',
+      message: 'second nudge',
+      surfacedAt: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+    const found = mostRecentAnswerableSurface(db, task.id, new Date().toISOString(), 24 * 3_600_000);
+    expect(found?.id).toBe(newer.id);
+    expect(found?.id).not.toBe(older.id);
+  });
+
+  it('returns null when there is no surface for the task', () => {
+    const task = db.insertTask({ description: 'untouched task', source: 'manual' })!;
+    expect(mostRecentAnswerableSurface(db, task.id, new Date().toISOString(), 24 * 3_600_000)).toBeNull();
+  });
+
+  it('skips a surface that already has a response', () => {
+    const task = db.insertTask({ description: 'ship the report', source: 'manual' })!;
+    const surface = db.insertProactiveLog({ taskId: task.id, surfaceKind: 'nudge', message: 'nudge' });
+    db.setProactiveResponse(surface.id, 'completed', 'chat: already answered');
+    expect(mostRecentAnswerableSurface(db, task.id, new Date().toISOString(), 24 * 3_600_000)).toBeNull();
+  });
+
+  it('skips a surface older than the response window', () => {
+    const task = db.insertTask({ description: 'ship the report', source: 'manual' })!;
+    db.insertProactiveLog({
+      taskId: task.id,
+      surfaceKind: 'nudge',
+      message: 'nudge',
+      surfacedAt: new Date(Date.now() - 25 * 3_600_000).toISOString(),
+    });
+    expect(mostRecentAnswerableSurface(db, task.id, new Date().toISOString(), 24 * 3_600_000)).toBeNull();
   });
 });

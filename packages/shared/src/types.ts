@@ -157,6 +157,12 @@ export const AiDecisionSchema = z.object({
   latencyMs: z.number().nullable(),
   inputTokens: z.number().nullable(),
   outputTokens: z.number().nullable(),
+  /** Input tokens served from the prompt cache — NULL on rows recorded before migration 008. */
+  cacheReadInputTokens: z.number().nullable(),
+  /** Input tokens written to the prompt cache this call — NULL on rows recorded before migration 008. */
+  cacheCreationInputTokens: z.number().nullable(),
+  /** SDK-reported authoritative cost for this call, when the provider supplied one — NULL otherwise. */
+  totalCostUsd: z.number().nullable(),
   relatedRef: z.string().nullable(),
   error: z.string().nullable(),
   createdAt: z.string(),
@@ -210,6 +216,15 @@ export const CommitmentStatusSchema = z.enum(['open', 'delivered', 'expired', 'd
 export type CommitmentStatus = z.infer<typeof CommitmentStatusSchema>;
 
 /**
+ * 'inferred' — extracted from conversation by the hidden post-turn pass; delivered
+ * through tick judgment with min-age/max-per-day anti-nag gates.
+ * 'explicit' — the user asked for it (set_reminder chat tool); delivered exactly at
+ * dueAt by the reminder scheduler (loop/reminders.ts), bypassing judgment and gates.
+ */
+export const CommitmentKindSchema = z.enum(['inferred', 'explicit']);
+export type CommitmentKind = z.infer<typeof CommitmentKindSchema>;
+
+/**
  * A short-lived follow-up inferred from chat ("my interview is tomorrow at 3") —
  * operational state, NOT a task and NOT durable memory. See chat/commitments.ts
  * (extraction) and loop/commitments.ts (tick delivery).
@@ -222,6 +237,7 @@ export const CommitmentSchema = z.object({
   createdAt: z.string(),
   status: CommitmentStatusSchema,
   deliveredAt: z.string().nullable(),
+  kind: CommitmentKindSchema,
 });
 export type Commitment = z.infer<typeof CommitmentSchema>;
 
@@ -269,6 +285,11 @@ export const CostTotalsSchema = z.object({
   calls: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
+  /** Input tokens served from the prompt cache — the SDK reports these separately from
+   * (non-overlapping with) inputTokens; priced at their own, much cheaper rate. */
+  cacheReadInputTokens: z.number(),
+  /** Input tokens written to the prompt cache this call — priced above the plain input rate. */
+  cacheCreationInputTokens: z.number(),
   costUsd: z.number(),
   /** Calls whose model has no pricing entry — tokens counted, cost not. */
   unpricedCalls: z.number(),
@@ -311,7 +332,15 @@ export const CostsReportSchema = z.object({
   /** Last 30 UTC days, oldest first. */
   byDay: z.array(CostDayRowSchema),
   /** Effective USD/MTok rates the report was priced with. */
-  pricing: z.record(z.string(), z.object({ inputPerMTok: z.number(), outputPerMTok: z.number() })),
+  pricing: z.record(
+    z.string(),
+    z.object({
+      inputPerMTok: z.number(),
+      outputPerMTok: z.number(),
+      cacheReadPerMTok: z.number(),
+      cacheCreationPerMTok: z.number(),
+    }),
+  ),
 });
 export type CostsReport = z.infer<typeof CostsReportSchema>;
 

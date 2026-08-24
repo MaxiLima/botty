@@ -39,12 +39,24 @@ export function parseBody<S extends ZodType>(schema: S, body: unknown): z.infer<
   return result.data;
 }
 
-/** Optional positive-integer query param (`?limit=50`); 400 on garbage. */
+/**
+ * Upper bound for any `?limit=` query param. Without this, `Number.isInteger`
+ * happily accepts huge-but-whole floats (`Number.isInteger(1e308) === true` —
+ * doubles that large have no fractional part left to fail the check), which
+ * then reach a SQL `LIMIT` or an array allocation and 500. Callers that want a
+ * smaller cap can clamp further themselves; this is the one ceiling every
+ * route gets for free.
+ */
+export const MAX_QUERY_LIMIT = 500;
+
+/** Optional positive-integer query param (`?limit=50`); 400 on garbage, clamped to MAX_QUERY_LIMIT. */
 export function queryInt(value: unknown, name: string): number | undefined {
   if (value === undefined || value === '') return undefined;
   const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0) throw badRequest(`${name} must be a positive integer`);
-  return n;
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw badRequest(`${name} must be a positive integer`);
+  }
+  return Math.min(n, MAX_QUERY_LIMIT);
 }
 
 /** Optional non-empty string query param. */

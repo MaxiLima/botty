@@ -1,4 +1,4 @@
-import { SOURCES, type SourceId } from '@botty/shared';
+import { SOURCES, type SourceEvent, type SourceId } from '@botty/shared';
 import type { ConfigManager } from '../config/index.js';
 import { nowIso } from '../db/index.js';
 import { isWithinWorkingHours } from '../loop/time.js';
@@ -37,6 +37,15 @@ export function createScheduler(ctx: SchedulerCtx, adapters: AdapterMap): Source
   const timers = new Map<SourceId, NodeJS.Timeout>();
   let running = false;
   let offHoursLogged = false;
+  // Test gap closed (scheduler concurrency): a manual `checkNow` landing while
+  // a scheduled tick for the SAME source is already mid-flight used to race
+  // on `since` — each run reads the watermark at ITS OWN start, so whichever
+  // run finishes last simply overwrites it, silently reverting any forward
+  // progress the other run made (H5 paging made this worse: a truncated run's
+  // carefully-computed partial-drain watermark could be clobbered back by a
+  // concurrent run that started from the older floor). One in-flight run per
+  // source, shared rather than raced.
+  const inFlight = new Map<SourceId, Promise<string>>();
 
   async function runCheck(source: SourceId): Promise<string> {
     const since = ctx.db.getSetting<string>(sinceKey(source)) ?? null;
@@ -49,20 +58,46 @@ export function createScheduler(ctx: SchedulerCtx, adapters: AdapterMap): Source
       // ERROR (e.g. transient LLM failure) — they are never refetched.
       const recovered = await retryErroredEvents(ctx, source);
       if (recovered > 0) console.log(`[ingest] ${source}: recovered ${recovered} ERROR event(s) on retry`);
-      const events = await adapters[source].fetch(since);
-      eventsFetched = events.length;
-      for (const event of events) {
+      const adapter = adapters[source];
+      // Paging-aware adapters (gmail today) report the safe watermark
+      // themselves — never past mail they didn't fetch — instead of us
+      // blindly assuming "check succeeded ⇒ fully drained ⇒ jump to
+      // startedAt" (H5: that assumption is what silently dropped backlog
+      // past the first MAX_EVENTS_PER_FETCH messages). Adapters without
+      // fetchWindow (sim/stub/gcal) keep the old behavior.
+      const result: { events: SourceEvent[]; nextSince: string; truncated: boolean } = adapter.fetchWindow
+        ? await adapter.fetchWindow(since)
+        : { events: await adapter.fetch(since), nextSince: startedAt, truncated: false };
+      eventsFetched = result.events.length;
+      for (const event of result.events) {
         const outcome = await processEvent(ctx, event);
         if (outcome !== 'DUPLICATE') eventsNew += 1;
       }
       // Only a fully successful check advances `since` (refetch is dedup-safe).
-      ctx.db.setSetting(sinceKey(source), startedAt);
+      ctx.db.setSetting(sinceKey(source), result.nextSince);
+      if (result.truncated) {
+        console.warn(
+          `[ingest] ${source}: window not fully drained this check (page cap hit) — ` +
+            `watermark pinned, will keep draining on the next poll`,
+        );
+      }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     }
     const check = ctx.db.insertSourceCheck({ source, eventsFetched, eventsNew, error });
     ctx.bus.broadcast({ type: 'source.checked', payload: { check } });
     return check.id;
+  }
+
+  /** Run `source`'s check, joining an already in-flight run instead of racing it. */
+  function guardedRunCheck(source: SourceId): Promise<string> {
+    const existing = inFlight.get(source);
+    if (existing) return existing;
+    const p = runCheck(source).finally(() => {
+      if (inFlight.get(source) === p) inFlight.delete(source);
+    });
+    inFlight.set(source, p);
+    return p;
   }
 
   function schedule(source: SourceId, delayMs: number): void {
@@ -73,7 +108,7 @@ export function createScheduler(ctx: SchedulerCtx, adapters: AdapterMap): Source
         if (isWithinWorkingHours(nowIso(), ctx.config.heartbeat())) {
           offHoursLogged = false;
           if (ctx.config.heartbeat().sources[source].enabled) {
-            await runCheck(source); // runCheck never throws — errors land in source_check_log
+            await guardedRunCheck(source); // runCheck never throws — errors land in source_check_log
           }
         } else if (!offHoursLogged) {
           offHoursLogged = true;
@@ -99,7 +134,7 @@ export function createScheduler(ctx: SchedulerCtx, adapters: AdapterMap): Source
       timers.clear();
     },
     checkNow(source: SourceId): Promise<string> {
-      return runCheck(source);
+      return guardedRunCheck(source);
     },
   };
 }

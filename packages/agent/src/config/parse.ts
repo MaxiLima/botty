@@ -271,8 +271,57 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
     else warnings.push(`Invalid number for ${key}: "${v}" (using ${fallback})`);
   };
 
+  /**
+   * Sane ceiling (7 days) for the two knobs that turn directly into a raw
+   * `setTimeout` delay (`tickIntervalMin`, `resolutionSweepIntervalMin` — see
+   * loop/index.ts). Node silently clamps any `setTimeout` delay above
+   * 2^31-1 ms (~35791 minutes) to ~1ms instead of throwing, so an unbounded
+   * interval (a typo with an extra digit, or a value in the wrong unit)
+   * turns "run every N minutes" into "run every LLM call, forever." 10080
+   * minutes is far under that overflow threshold with plenty of headroom,
+   * and no legitimate cadence needs to be slower than a week anyway.
+   */
+  const MAX_INTERVAL_MIN = 10_080;
+
+  /**
+   * Like `num`, but rejects (clamping, with a warning) values outside
+   * [min, max] instead of silently accepting anything >= 0 — for knobs where
+   * zero or unbounded values are actively dangerous (see MAX_INTERVAL_MIN
+   * above; zero also means "wake up as fast as the event loop allows").
+   */
+  const numBounded = (
+    map: Map<string, string>,
+    key: string,
+    fallback: number,
+    apply: (n: number) => void,
+    min: number,
+    max: number,
+  ) => {
+    const v = map.get(key);
+    if (v === undefined) return;
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+      warnings.push(`Invalid number for ${key}: "${v}" (using ${fallback})`);
+      return;
+    }
+    if (n < min || n > max) {
+      const clamped = Math.min(Math.max(n, min), max);
+      warnings.push(`${key} "${v}" out of range [${min}, ${max}] — clamped to ${clamped}`);
+      apply(clamped);
+      return;
+    }
+    apply(n);
+  };
+
   const schedule = kv('Schedule');
-  num(schedule, 'tick_interval_min', cfg.tickIntervalMin, (n) => (cfg.tickIntervalMin = n));
+  numBounded(
+    schedule,
+    'tick_interval_min',
+    cfg.tickIntervalMin,
+    (n) => (cfg.tickIntervalMin = n),
+    1,
+    MAX_INTERVAL_MIN,
+  );
   const window = (key: string, apply: (w: { start: string; end: string }) => void) => {
     const v = schedule.get(key);
     if (v === undefined) return;
@@ -305,12 +354,26 @@ export function parseHeartbeat(md: string, mode: 'sim' | 'real' = 'sim'): Heartb
   num(behavior, 'max_snoozes_per_tick', cfg.maxSnoozesPerTick, (n) => (cfg.maxSnoozesPerTick = n));
   num(behavior, 'response_window_hours', cfg.responseWindowHours, (n) => (cfg.responseWindowHours = n));
   num(behavior, 'chat_active_gate_min', cfg.chatActiveGateMin, (n) => (cfg.chatActiveGateMin = n));
-  num(behavior, 'session_idle_seal_min', cfg.sessionIdleSealMin, (n) => (cfg.sessionIdleSealMin = n));
+  numBounded(
+    behavior,
+    'session_idle_seal_min',
+    cfg.sessionIdleSealMin,
+    (n) => (cfg.sessionIdleSealMin = n),
+    1,
+    MAX_INTERVAL_MIN,
+  );
   num(behavior, 'meeting_prep_lead_min', cfg.meetingPrepLeadMin, (n) => (cfg.meetingPrepLeadMin = n));
   num(behavior, 'due_soon_days', cfg.dueSoonDays, (n) => (cfg.dueSoonDays = n));
   num(behavior, 'never_surfaced_min_age_hours', cfg.neverSurfacedMinAgeHours, (n) => (cfg.neverSurfacedMinAgeHours = n));
   num(behavior, 'stale_after_days', cfg.staleAfterDays, (n) => (cfg.staleAfterDays = n));
-  num(behavior, 'resolution_sweep_interval_min', cfg.resolutionSweepIntervalMin, (n) => (cfg.resolutionSweepIntervalMin = n));
+  numBounded(
+    behavior,
+    'resolution_sweep_interval_min',
+    cfg.resolutionSweepIntervalMin,
+    (n) => (cfg.resolutionSweepIntervalMin = n),
+    1,
+    MAX_INTERVAL_MIN,
+  );
   num(behavior, 'max_resolution_checks_per_sweep', cfg.maxResolutionChecksPerSweep, (n) => (cfg.maxResolutionChecksPerSweep = n));
   num(behavior, 'resolution_check_cooldown_min', cfg.resolutionCheckCooldownMin, (n) => (cfg.resolutionCheckCooldownMin = n));
   const confidence = behavior.get('resolution_confidence_min');

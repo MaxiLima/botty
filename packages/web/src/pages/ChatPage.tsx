@@ -13,6 +13,21 @@ import { api } from '../lib/api.js';
 import { Markdown } from '../lib/markdown.js';
 import { clock, tryParseJson } from '../lib/format.js';
 import { useOnReconnect, useWsEvent } from '../lib/ws.js';
+import {
+  createLocalUserTurn,
+  isLocalTurnId,
+  mergeNewerTurns,
+  mergeOlderTurns,
+  shouldAdoptForeignTurn,
+  withSeams,
+} from '../lib/chatTranscript.js';
+import {
+  reducePendingOnDone,
+  reducePendingOnError,
+  reducePendingOnSend,
+  reducePendingStream,
+  type PendingTurn,
+} from '../lib/chatStream.js';
 import { JsonViewer } from '../components/JsonViewer.js';
 import {
   applyResolvedAction,
@@ -39,13 +54,6 @@ const TAIL_LIMIT = 20;
 /** Coalesce back-to-back adoption triggers (chunk/thinking/toolUse for a burst
  * of foreign turns) into a single history refetch. */
 const TAIL_DEBOUNCE_MS = 150;
-
-interface PendingTurn {
-  turnId: string;
-  text: string;
-  thinking: boolean;
-  tool: string | null;
-}
 
 /** A turn that died mid-stream — keep the partial text the user watched. */
 interface FailedTurn {
@@ -103,6 +111,10 @@ export function ChatPage() {
   /** Last turnId we already triggered a tail refetch for — avoids a refetch per chunk. */
   const adoptedRef = useRef<string | null>(null);
   const tailDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** True between compositionstart/compositionend — an in-progress IME
+   * composition (Japanese conversion, an accented-character candidate, …).
+   * See onComposerKey. */
+  const composingRef = useRef(false);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -115,15 +127,13 @@ export function ChatPage() {
   }, []);
 
   // Pull in the tail without disturbing any earlier pages the user has scrolled
-  // to load — merges only turns we don't already know about (dedupe by id).
+  // to load — merges only turns we don't already know about, reconciling any
+  // matching optimistic echo instead of appending a second copy (see
+  // mergeNewerTurns).
   const refreshTail = useCallback(async () => {
     try {
       const res = await api.chatHistory(TAIL_LIMIT);
-      setTurns((prev) => {
-        const known = new Set(prev.map((t) => t.id));
-        const fresh = res.turns.filter((t) => !known.has(t.id));
-        return fresh.length > 0 ? [...prev, ...fresh] : prev;
-      });
+      setTurns((prev) => mergeNewerTurns(prev, res.turns));
     } catch {
       // best-effort — the stream events already carry the reply; a failed
       // adoption refetch just means the triggering user turn stays missing.
@@ -143,10 +153,13 @@ export function ChatPage() {
    * the tail to pull it in; skip if it's our own in-flight send or already known. */
   const adopt = useCallback(
     (turnId: string) => {
-      if (adoptedRef.current === turnId) return;
-      if (sendingRef.current) return;
-      if (pendingRef.current?.turnId === turnId) return;
-      if (finishedRef.current.has(turnId)) return;
+      const should = shouldAdoptForeignTurn(turnId, {
+        lastAdoptedTurnId: adoptedRef.current,
+        sending: sendingRef.current,
+        pendingTurnId: pendingRef.current?.turnId ?? null,
+        finishedTurnIds: finishedRef.current,
+      });
+      if (!should) return;
       adoptedRef.current = turnId;
       scheduleTailRefetch();
     },
@@ -184,33 +197,20 @@ export function ChatPage() {
   // dropping the chunk, unless it already finished.
   useWsEvent('chat.chunk', (p) => {
     adopt(p.turnId);
-    setPending((prev) => {
-      if (prev) return prev.turnId === p.turnId ? { ...prev, text: prev.text + p.delta, thinking: false } : prev;
-      if (finishedRef.current.has(p.turnId)) return prev;
-      return { turnId: p.turnId, text: p.delta, thinking: false, tool: null };
-    });
+    setPending((prev) => reducePendingStream(prev, { kind: 'chunk', ...p }, finishedRef.current));
   });
   useWsEvent('chat.thinking', (p) => {
     adopt(p.turnId);
-    setPending((prev) => {
-      if (prev) return prev.turnId === p.turnId ? { ...prev, thinking: p.on } : prev;
-      if (finishedRef.current.has(p.turnId)) return prev;
-      return { turnId: p.turnId, text: '', thinking: p.on, tool: null };
-    });
+    setPending((prev) => reducePendingStream(prev, { kind: 'thinking', ...p }, finishedRef.current));
   });
   useWsEvent('chat.toolUse', (p) => {
     adopt(p.turnId);
-    const tool = p.summary ? `${p.name} — ${p.summary}` : p.name;
-    setPending((prev) => {
-      if (prev) return prev.turnId === p.turnId ? { ...prev, tool } : prev;
-      if (finishedRef.current.has(p.turnId)) return prev;
-      return { turnId: p.turnId, text: '', thinking: false, tool };
-    });
+    setPending((prev) => reducePendingStream(prev, { kind: 'toolUse', ...p }, finishedRef.current));
   });
   useWsEvent('chat.done', (p) => {
     finishedRef.current.add(p.turnId);
-    setPending((prev) => (prev && prev.turnId !== p.turnId ? prev : null));
-    setTurns((prev) => (prev.some((t) => t.id === p.turn.id) ? prev : [...prev, p.turn]));
+    setPending((prev) => reducePendingOnDone(prev, p.turnId));
+    setTurns((prev) => mergeNewerTurns(prev, [p.turn]));
   });
   useWsEvent('chat.error', (p) => {
     finishedRef.current.add(p.turnId);
@@ -223,18 +223,14 @@ export function ChatPage() {
     );
     // Clear pending so the composer unlocks — the agent never sends a
     // chat.done after chat.error, and Stop is a no-op with no active run.
-    setPending((cur) => (cur && cur.turnId !== p.turnId ? cur : null));
+    setPending((cur) => reducePendingOnError(cur, p.turnId));
   });
 
   const thread = useMemo<ThreadItem[]>(() => {
     const items: ThreadItem[] = [];
-    let prevSession: string | null = null;
-    for (const turn of turns) {
+    for (const { turn, seamBefore } of withSeams(turns)) {
       const at = new Date(turn.createdAt).getTime() || 0;
-      if (prevSession !== null && turn.sessionId !== prevSession) {
-        items.push({ kind: 'seam', at, id: `seam-${turn.id}` });
-      }
-      prevSession = turn.sessionId;
+      if (seamBefore) items.push({ kind: 'seam', at, id: `seam-${turn.id}` });
       items.push({ kind: 'turn', at, turn });
     }
     for (const n of notifications) {
@@ -284,10 +280,7 @@ export function ChatPage() {
     try {
       const res = await api.chatHistory(PAGE_SIZE, oldest.createdAt, oldest.id);
       setHasMore(res.turns.length >= PAGE_SIZE);
-      setTurns((prev) => {
-        const known = new Set(prev.map((t) => t.id));
-        return [...res.turns.filter((t) => !known.has(t.id)), ...prev];
-      });
+      setTurns((prev) => mergeOlderTurns(prev, res.turns));
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -345,7 +338,10 @@ export function ChatPage() {
     const text = draft.trim();
     const attachments = images;
     const quoted = quote;
-    if ((!text && attachments.length === 0) || pending) return;
+    // No `|| pending` gate — the server queues turns strictly in order
+    // (chat/index.ts's queueTurn), so a message sent while another is still
+    // streaming is simply processed right after it, not dropped or racing it.
+    if (!text && attachments.length === 0) return;
     let outText = text || '(image)';
     setSendError(null);
     setDraft('');
@@ -355,7 +351,7 @@ export function ChatPage() {
     // The agent resolves quotedTurnId against chat_turns only — notification
     // ids and optimistic local-* ids are unknown to it and would be silently
     // dropped. For those, embed the snippet in the text so the context lands.
-    const quotedIsReal = quoted !== null && !quoted.id.startsWith('local-') && turnsById.has(quoted.id);
+    const quotedIsReal = quoted !== null && !isLocalTurnId(quoted.id) && turnsById.has(quoted.id);
     const meta: Record<string, unknown> = {};
     if (quoted) {
       if (quotedIsReal) {
@@ -366,18 +362,21 @@ export function ChatPage() {
       }
     }
     if (attachments.length > 0) meta.attachments = attachments;
-    const localTurn: ChatTurn = {
-      id: `local-${Date.now()}`,
-      sessionId: turns[turns.length - 1]?.sessionId ?? 'local',
-      role: 'user',
-      content: outText,
+    const localTurn = createLocalUserTurn({
+      text: outText,
       meta: Object.keys(meta).length > 0 ? meta : null,
-      createdAt: now,
-    };
+      sessionId: turns[turns.length - 1]?.sessionId ?? null,
+      now,
+    });
     setTurns((prev) => [...prev, localTurn]);
     stickToBottom.current = true;
-    // Only ids finishing during this send's POST window matter to the guard.
-    finishedRef.current.clear();
+    // finishedRef is never cleared: turnIds are one-shot nanoids (never
+    // reused), so a stale entry can never misidentify a *different* turn as
+    // finished. With sends now allowed to overlap (server queues turns —
+    // see below), clearing it here on every call could wipe out a still-true
+    // "turn X already finished" marker set by an earlier send that's still
+    // resolving concurrently, letting a late/duplicate stream event for that
+    // turn resurrect a phantom `pending`.
     sendingRef.current = true;
     try {
       const { turnId } = await api.chatSend({
@@ -385,15 +384,11 @@ export function ChatPage() {
         quotedTurnId: quoted && quotedIsReal ? quoted.id : undefined,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
-      // Stream events may have raced ahead of the POST response — keep them,
-      // and never resurrect a turn that already finished while we waited.
-      setPending((prev) =>
-        prev && prev.turnId === turnId
-          ? prev
-          : finishedRef.current.has(turnId)
-            ? prev
-            : { turnId, text: '', thinking: true, tool: null },
-      );
+      // Stream events may have raced ahead of the POST response — keep them.
+      // Never resurrect a turn that already finished while we waited, and
+      // never clobber a still-pending OTHER turn (this one is queued behind
+      // it server-side and hasn't started yet) — see reducePendingOnSend.
+      setPending((prev) => reducePendingOnSend(prev, turnId, finishedRef.current));
     } catch (err) {
       setSendError(err instanceof Error ? err.message : String(err));
       setDraft(text);
@@ -424,10 +419,16 @@ export function ChatPage() {
   };
 
   const onComposerKey = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void send();
-    }
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    // Mid-IME-composition Enter (confirming a Japanese conversion, or an
+    // accent/dead-key candidate on some IMEs) must not commit the draft as a
+    // send — it's finishing the composition, not asking to submit. Check
+    // both signals: `nativeEvent.isComposing` (most browsers) and the
+    // compositionstart/end-tracked ref (belt-and-suspenders for engines that
+    // report isComposing unreliably around the confirming keydown).
+    if (e.nativeEvent.isComposing || composingRef.current) return;
+    e.preventDefault();
+    void send();
   };
 
   const canSend = Boolean(draft.trim()) || images.length > 0;
@@ -511,18 +512,27 @@ export function ChatPage() {
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onComposerKey}
             onPaste={onPaste}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
             autoFocus
           />
           <div className="composer-actions">
-            {pending ? (
+            {/* Stop interrupts whatever's currently streaming; Send is never
+                hidden while it's up — the server queues a new turn behind the
+                current one instead of rejecting it, so there's no reason to
+                block composing/sending the next message. */}
+            {pending && (
               <button className="btn btn-stop" onClick={() => void stop()} title="Interrupt the streaming reply">
                 ■ Stop
               </button>
-            ) : (
-              <button className="btn btn-send" onClick={() => void send()} disabled={!canSend}>
-                Send ⏎
-              </button>
             )}
+            <button className="btn btn-send" onClick={() => void send()} disabled={!canSend}>
+              Send ⏎
+            </button>
             <button
               className="btn btn-ghost"
               onClick={() => void freshContext()}
@@ -632,7 +642,10 @@ function PendingRow({ pending }: { pending: PendingTurn }) {
         <span className="turn-who">botty</span>
         <span className="turn-time">now</span>
       </div>
-      <div className="turn-body">
+      {/* aria-live so a screen reader tracks the reply as it streams in,
+          rather than staying silent until the turn completes and the final
+          text lands in the (non-live) history below. */}
+      <div className="turn-body" aria-live="polite" aria-atomic="false">
         {pending.text && <Markdown source={pending.text} />}
         <div className="presence-row">
           {pending.thinking && (

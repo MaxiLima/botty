@@ -59,7 +59,7 @@
       "meta": {
         "startAtMinute": -37380,
         "durationMin": 60,
-        "attendees": ["marian@acme.example", "sofi@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "attendees": ["marian@acme.example", "sofi@acme.example", "diego@acme.example", "yo@acme.example"],
         "location": "Sala Ombú / Meet"
       }
     },
@@ -76,7 +76,7 @@
       "source": "gmail",
       "kind": "email",
       "direction": "outbound",
-      "actor": { "email": "yo@maxolabs.io", "displayName": "Maxo" },
+      "actor": { "email": "yo@acme.example", "displayName": "Maxo" },
       "text": "Subject: Re: Q1 fraud postmortem deck\n\nDone — just sent it over, tiene los números de BR y AR del Q1. Avisame si falta algo.",
       "threadRef": "H-q1-postmortem"
     },
@@ -112,7 +112,7 @@
       "meta": {
         "startAtMinute": -30180,
         "durationMin": 45,
-        "attendees": ["caro@acme.example", "marian@acme.example", "yo@maxolabs.io"],
+        "attendees": ["caro@acme.example", "marian@acme.example", "yo@acme.example"],
         "location": "Meet"
       }
     },
@@ -178,7 +178,7 @@
       "meta": {
         "startAtMinute": -20100,
         "durationMin": 60,
-        "attendees": ["fer@vendorpay.io", "marian@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "attendees": ["fer@vendorpay.io", "marian@acme.example", "diego@acme.example", "yo@acme.example"],
         "location": "Meet"
       }
     },
@@ -203,7 +203,7 @@
       "source": "gmail",
       "kind": "email",
       "direction": "outbound",
-      "actor": { "email": "yo@maxolabs.io", "displayName": "Maxo" },
+      "actor": { "email": "yo@acme.example", "displayName": "Maxo" },
       "text": "Subject: Re: Presupuesto Q3 tooling de fraude\n\nExcelente! Arranco el procurement con Rodrigo esta semana.",
       "threadRef": "H-q3-budget"
     },
@@ -254,7 +254,7 @@
       "meta": {
         "startAtMinute": -10020,
         "durationMin": 45,
-        "attendees": ["marian@acme.example", "yo@maxolabs.io"],
+        "attendees": ["marian@acme.example", "yo@acme.example"],
         "location": "Sala Jacarandá"
       }
     },
@@ -313,7 +313,7 @@
       "meta": {
         "startAtMinute": -1380,
         "durationMin": 30,
-        "attendees": ["sofi@acme.example", "marian@acme.example", "diego@acme.example", "yo@maxolabs.io"],
+        "attendees": ["sofi@acme.example", "marian@acme.example", "diego@acme.example", "yo@acme.example"],
         "location": "Meet"
       }
     },

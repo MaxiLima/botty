@@ -92,7 +92,7 @@ describe('processHistoricalEvent', () => {
     const event = makeEvent({
       externalId: 'hist-out',
       direction: 'outbound',
-      actor: { email: 'yo@maxolabs.io', displayName: 'Maxo' },
+      actor: { email: 'yo@acme.example', displayName: 'Maxo' },
       text: 'done — sent it over',
       occurredAt: daysAgo(5),
     });

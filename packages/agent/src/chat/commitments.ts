@@ -69,17 +69,86 @@ export const COMMITMENT_SYSTEM = [
   'Return JSON: { commitments: [{ description: string, dueAt: string (see date/time rule above) }] }.',
 ].join('\n');
 
+/** Warn at most once per process — this is called on essentially every chat/loop turn. */
+let warnedMissingTz = false;
+
 /**
  * Best-effort IANA zone to treat as the user's local time. botty is a single-user,
  * self-hosted assistant — the process's configured zone IS the user's zone (same
  * assumption memory/index.ts's "Current time" system-prompt line makes).
+ *
+ * LOW (2026-08-21 report): a launchd/systemd-launched agent has no login shell env,
+ * so `TZ` is often unset — Node/ICU then falls back to UTC, and every "tomorrow"/
+ * reminder/due-date computation silently shifts by the real offset. There's no fully
+ * reliable way to tell "the user's real zone genuinely is UTC" apart from "TZ was
+ * never set", so this can't safely fail hard (no configured-zone override lives in
+ * this file's scope — HeartbeatConfig is owned by config/parse.ts). It CAN fail
+ * loudly: warn once when the resolution lands on UTC with no explicit TZ set, so a
+ * misconfigured deploy is at least visible in the logs instead of silently wrong.
  */
 export function defaultTimeZone(): string {
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    if (resolved === 'UTC' && !process.env.TZ && !warnedMissingTz) {
+      warnedMissingTz = true;
+      console.warn(
+        '[commitments] no TZ env var set and the system default resolved to UTC — if this process was ' +
+          'started by launchd/systemd/cron (no login shell environment), every relative date/time ' +
+          "(reminders, \"tomorrow\", due dates) may be computed against UTC instead of your real local " +
+          'time. Set TZ explicitly (e.g. TZ=America/Argentina/Buenos_Aires) in the process environment ' +
+          'to fix this, or ignore this warning if UTC really is your zone.',
+      );
+    }
+    return resolved;
   } catch {
     return 'UTC';
   }
+}
+
+/**
+ * Format an instant as a full local ISO string WITH numeric offset
+ * ("2026-08-15T16:52:25-03:00") in `timeZone`. Used by the chat system prompt's
+ * "Current time" line (memory/index.ts): handing the model a bare UTC instant
+ * next to a zone name made it read the UTC digits as local wall-clock and
+ * append the offset — set_reminder dueAts landed hours late (2026-08-15 bug,
+ * same class as this file's 2026-07-09 CURRENT_TIME fix). A local time carrying
+ * its own offset is unambiguous AND directly usable for dueAt arithmetic.
+ */
+export function formatLocalIsoWithOffset(iso: string, timeZone: string): string {
+  // Round: tzOffsetMinutes is fractional when `iso` carries milliseconds (the
+  // formatToParts round-trip drops them); real-world offsets are whole minutes.
+  const offsetMin = Math.round(tzOffsetMinutes(Date.parse(iso), timeZone));
+  const sign = offsetMin < 0 ? '-' : '+';
+  const abs = Math.abs(offsetMin);
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm = String(abs % 60).padStart(2, '0');
+  return `${formatLocalWallClock(iso, timeZone)}${sign}${hh}:${mm}`;
+}
+
+/**
+ * Same as `formatLocalIsoWithOffset`, plus the local weekday name
+ * ("2026-08-21T22:17:00-03:00 (Friday)"). Every "current time" / reference-
+ * instant prompt line OUTSIDE chat (ingest funnel OCCURRED_AT, tick judgment,
+ * briefings) needs this too: a bare UTC instant let the model read "tomorrow"/
+ * "hoy"/"Thursday" against the wrong calendar day (H1, 2026-08-21 investigation
+ * — a 22:17-local event landed as 01:17Z the next UTC day, so "tomorrow"
+ * resolved to 2 days out and "hoy" to the wrong day). Reuses
+ * `formatLocalIsoWithOffset` rather than duplicating the offset math.
+ */
+export function formatLocalIsoWithOffsetAndWeekday(iso: string, timeZone: string): string {
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' }).format(
+    new Date(iso),
+  );
+  return `${formatLocalIsoWithOffset(iso, timeZone)} (${weekday})`;
+}
+
+/**
+ * Local calendar date ("YYYY-MM-DD", e.g. what "today"/"hoy" means) for an
+ * instant in `timeZone` — the date-only prefix of `formatLocalIsoWithOffset`,
+ * for callers that need the user's calendar day rather than UTC's.
+ */
+export function localCalendarDate(iso: string, timeZone: string): string {
+  return formatLocalIsoWithOffset(iso, timeZone).slice(0, 10);
 }
 
 /** Format an instant as a naive local wall-clock string ("YYYY-MM-DDTHH:MM:SS") in `timeZone`. */
@@ -169,10 +238,26 @@ export function buildCommitmentPrompt(text: string, now: string, timeZone: strin
  */
 const TIME_SIGNAL_RE =
   /\b(today|tonight|tomorrow|tmrw|noon|midnight|morning|afternoon|evening|eod|end of day|next week|this week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|in \d+\s*(min|mins|minute|minutes|hour|hours|day|days|week|weeks)|at \d{1,2}(:\d{2})?\s*(am|pm)?|by \d{1,2}(:\d{2})?\s*(am|pm)?)\b/i;
+
+/**
+ * Spanish time/reminder signals — the owner's traffic is bilingual (funnel eventPrompt
+ * and this gate both used to be English-only), so "mi entrevista es mañana a las 3"
+ * matched nothing above and never reached the LLM extraction pass at all. Covers:
+ * hoy/mañana/pasado mañana, esta tarde/noche/mañana, weekday names ("el lunes"), clock
+ * time ("a las 3", "a la 1"), and the imperative reminder verbs (recordame/acordate/
+ * avisame — voseo and standard forms) that signal "remind me" regardless of tense.
+ */
+const SPANISH_TIME_SIGNAL_RE =
+  /\b(hoy|esta\s+noche|ma[ñn]ana|pasado\s+ma[ñn]ana|esta\s+(tarde|ma[ñn]ana)|pr[oó]xima\s+semana|la\s+semana\s+que\s+viene|esta\s+semana|lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo|a\s+la[s]?\s+\d{1,2}(:\d{2})?|recu[ée]rdame|record[áa]me|acu[ée]rdate|acu[ée]rdame|acord[áa]te|avisame|avísame)\b/i;
 const DATE_LIKE_RE = /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b/;
 
 export function hasCommitmentSignal(text: string): boolean {
-  return TIME_SIGNAL_RE.test(text) || DATE_LIKE_RE.test(text) || /\[\[commitment:/i.test(text);
+  return (
+    TIME_SIGNAL_RE.test(text) ||
+    SPANISH_TIME_SIGNAL_RE.test(text) ||
+    DATE_LIKE_RE.test(text) ||
+    /\[\[commitment:/i.test(text)
+  );
 }
 
 /** Same-day comparison on the ISO date prefix (dedup key). */

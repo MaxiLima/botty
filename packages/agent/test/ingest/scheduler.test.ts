@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SOURCES, type SourceEvent, type SourceId } from '@botty/shared';
 import { parseHeartbeat } from '../../src/config/parse.js';
 import { createSimAdapter } from '../../src/ingest/adapters/sim.js';
-import { createAdapters, type AdapterMap, type SourceAdapter } from '../../src/ingest/adapters/index.js';
+import { createAdapters, type AdapterMap, type FetchWindowResult, type SourceAdapter } from '../../src/ingest/adapters/index.js';
 import { createScheduler, sinceKey } from '../../src/ingest/scheduler.js';
 import { makeEvent, makeHarness, type Harness } from './helpers.js';
 
@@ -82,6 +82,174 @@ describe('scheduler.checkNow', () => {
     expect(check.error).toContain('sim unreachable');
     expect(check.eventsFetched).toBe(0);
     expect(h.db.getSetting(sinceKey('gmail'))).toBeUndefined();
+  });
+});
+
+/** Adapter that exposes fetchWindow directly, replaying canned results/errors
+ * per call (H5 watermark-safety tests). fetch() must never be reached when
+ * fetchWindow is present — the scheduler should always prefer it. */
+function stubWindowAdapter(source: SourceId, results: (FetchWindowResult | Error)[]): SourceAdapter {
+  let call = 0;
+  return {
+    source,
+    async fetch() {
+      throw new Error('fetch() should not be called when fetchWindow is present');
+    },
+    async fetchWindow() {
+      const r = results[Math.min(call, results.length - 1)]!;
+      call += 1;
+      if (r instanceof Error) throw r;
+      return r;
+    },
+  };
+}
+
+describe('scheduler concurrency', () => {
+  it('checkNow calls for the same source in flight share one run instead of racing the watermark', async () => {
+    const h = makeHarness();
+    let fetchCalls = 0;
+    let resolveFetch!: (events: SourceEvent[]) => void;
+    // `fetch()` is invoked a few microtask-hops after checkNow() returns
+    // (runCheck awaits retryErroredEvents first) — synchronize on it directly
+    // instead of guessing how many `await Promise.resolve()`s that takes.
+    let started!: () => void;
+    const startedFetch = () => new Promise<void>((resolve) => { started = resolve; });
+    let fetchStarted = startedFetch();
+    const adapter: SourceAdapter = {
+      source: 'slack',
+      fetch(_since) {
+        fetchCalls += 1;
+        started();
+        return new Promise((resolve) => {
+          resolveFetch = resolve;
+        });
+      },
+    };
+    const scheduler = schedulerFor(h, adapterMap({ slack: adapter }));
+
+    const p1 = scheduler.checkNow('slack');
+    const p2 = scheduler.checkNow('slack');
+    await fetchStarted;
+    // second caller must join the in-flight run rather than starting its own
+    // — this is exactly the race that used to let one run's watermark clobber
+    // the other's.
+    expect(fetchCalls).toBe(1);
+
+    resolveFetch([makeEvent({ externalId: 'conc-1', text: 'can you check the deploy?' })]);
+    const [id1, id2] = await Promise.all([p1, p2]);
+    expect(id1).toBe(id2); // both callers resolved to the SAME source_check_log row
+    expect(h.db.listSourceChecks()).toHaveLength(1);
+
+    // once that run has settled, a fresh checkNow starts a genuinely new run
+    fetchStarted = startedFetch();
+    const p3 = scheduler.checkNow('slack');
+    await fetchStarted;
+    expect(fetchCalls).toBe(2);
+    resolveFetch([]);
+    await p3;
+    expect(h.db.listSourceChecks()).toHaveLength(2);
+  });
+
+  it('a scheduled tick and a concurrent manual checkNow for the same source also share one run', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      let fetchCalls = 0;
+      let resolveFetch!: (events: SourceEvent[]) => void;
+      const adapter: SourceAdapter = {
+        source: 'slack',
+        fetch(_since) {
+          fetchCalls += 1;
+          return new Promise((resolve) => {
+            resolveFetch = resolve;
+          });
+        },
+      };
+      // Degenerate working_hours + all days ⇒ the hard gate never blocks the tick.
+      const scheduler = schedulerFor(
+        h,
+        adapterMap({ slack: adapter }),
+        '## Schedule\nworking_hours: 00:00-00:00\nactive_days: sun-sat\n',
+      );
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0); // slack's staggered t=0 tick starts and blocks on fetch()
+      expect(fetchCalls).toBe(1);
+
+      const manual = scheduler.checkNow('slack');
+      expect(fetchCalls).toBe(1); // manual call joined the already-running scheduled tick, no second fetch
+
+      resolveFetch([]);
+      await manual;
+      expect(h.db.listSourceChecks()).toHaveLength(1); // one shared run, one log row
+
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('scheduler watermark safety (H5 — real-mode backlog paging)', () => {
+  it('a capped (truncated) check pins the watermark at the adapter-reported nextSince, not startedAt', async () => {
+    const h = makeHarness();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const events = [makeEvent({ externalId: 'gm-1', text: 'can you check the deploy?' })];
+      const adapters = adapterMap({
+        gmail: stubWindowAdapter('gmail', [{ events, nextSince: '2026-07-01T00:00:00.000Z', truncated: true }]),
+      });
+      const scheduler = schedulerFor(h, adapters);
+
+      await scheduler.checkNow('gmail');
+
+      // The watermark must be exactly what the adapter said was safe — never
+      // advanced to "now" just because the check didn't error.
+      expect(h.db.getSetting<string>(sinceKey('gmail'))).toBe('2026-07-01T00:00:00.000Z');
+      const check = h.db.listSourceChecks()[0]!;
+      expect(check).toMatchObject({ source: 'gmail', eventsFetched: 1, eventsNew: 1, error: null });
+      expect(warn).toHaveBeenCalled(); // truncation must be observable
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a fully-drained (non-truncated) check advances the watermark to the adapter-reported nextSince normally', async () => {
+    const h = makeHarness();
+    const adapters = adapterMap({
+      gmail: stubWindowAdapter('gmail', [{ events: [], nextSince: '2026-07-27T12:00:00.000Z', truncated: false }]),
+    });
+    const scheduler = schedulerFor(h, adapters);
+
+    await scheduler.checkNow('gmail');
+
+    expect(h.db.getSetting<string>(sinceKey('gmail'))).toBe('2026-07-27T12:00:00.000Z');
+    expect(h.db.listSourceChecks()[0]).toMatchObject({ error: null });
+  });
+
+  it('a failing page leaves the watermark unmoved and lands the error in source_check_log', async () => {
+    const h = makeHarness();
+    const adapters = adapterMap({
+      gmail: stubWindowAdapter('gmail', [new Error('connector timed out mid-page')]),
+    });
+    const scheduler = schedulerFor(h, adapters);
+
+    await scheduler.checkNow('gmail');
+
+    expect(h.db.getSetting(sinceKey('gmail'))).toBeUndefined();
+    const check = h.db.listSourceChecks()[0]!;
+    expect(check.error).toContain('connector timed out mid-page');
+    expect(check.eventsFetched).toBe(0);
+  });
+
+  it('legacy adapters without fetchWindow keep advancing to the check start time (unchanged behavior)', async () => {
+    const h = makeHarness();
+    const sinces: (string | null)[] = [];
+    const adapters = adapterMap({ slack: stubAdapter('slack', [[]], sinces) });
+    const scheduler = schedulerFor(h, adapters);
+
+    await scheduler.checkNow('slack');
+
+    expect(h.db.getSetting<string>(sinceKey('slack'))).toBeTruthy();
   });
 });
 

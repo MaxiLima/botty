@@ -77,7 +77,7 @@ export const DEFAULT_TEMPLATES: InjectTemplate[] = [
       meta: {
         startAtMinute: 30,
         durationMin: 30,
-        attendees: ['marian@acme.example', 'yo@maxolabs.io'],
+        attendees: ['marian@acme.example', 'yo@acme.example'],
         location: 'Meet',
       },
     },

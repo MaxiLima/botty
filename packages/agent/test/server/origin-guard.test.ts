@@ -35,6 +35,7 @@ async function setup(): Promise<Harness> {
     simUrl: 'http://localhost:4821',
     mockLlm: true,
     port: 0,
+    devOriginPorts: [5173],
   };
   fs.mkdirSync(env.configArchiveDir, { recursive: true });
   fs.writeFileSync(path.join(env.configDir, 'persona.md'), '# PERSONA\nYou are botty.', 'utf8');
@@ -119,6 +120,41 @@ describe('server: REST Origin guard', () => {
 
       const vite = await fetch(`${h.base}/api/health`, { headers: { Origin: 'http://localhost:5173' } });
       expect(vite.status).toBe(200);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  // H6: loopback-bound does not mean this-app-only. Any process can bind a
+  // dev server to localhost on some other port; without a port check that
+  // page's fetch()es would ride the same trust as the agent's own web app.
+  it('403s a same-hostname Origin on a port that is neither the agent nor a configured dev port', async () => {
+    const h = await setup();
+    try {
+      const other = await fetch(`${h.base}/api/health`, { headers: { Origin: 'http://localhost:3000' } });
+      expect(other.status).toBe(403);
+      const body = (await other.json()) as { error: string; detail?: string };
+      expect(body.error).toBe('forbidden');
+      expect(body.detail).toContain('Origin');
+
+      const other127 = await fetch(`${h.base}/api/health`, { headers: { Origin: 'http://127.0.0.1:3000' } });
+      expect(other127.status).toBe(403);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('sets X-Frame-Options and a frame-ancestors CSP on every response', async () => {
+    const h = await setup();
+    try {
+      const res = await fetch(`${h.base}/api/health`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-frame-options')).toBe('DENY');
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+
+      // Present on a rejected/errored response too, not just the happy path.
+      const rejected = await fetch(`${h.base}/api/health`, { headers: { Origin: 'https://evil.example' } });
+      expect(rejected.headers.get('x-frame-options')).toBe('DENY');
     } finally {
       await h.teardown();
     }

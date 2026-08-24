@@ -5,11 +5,13 @@ import {
   CONFIG_FILE_NAMES,
   ChatMessageRequestSchema,
   ConfigSaveRequestSchema,
+  DEFAULT_MODELS,
   MuteRequestSchema,
   PendingActionStatusSchema,
   SOURCES,
   TaskActionRequestSchema,
   TaskStatusSchema,
+  type ChatTurn,
   type ConfigFileName,
   type SourceId,
   type Task,
@@ -18,7 +20,7 @@ import type { AgentContext } from '../context.js';
 import type { Ingest } from '../ingest/index.js';
 import type { Loop } from '../loop/index.js';
 import { nowIso, type Db } from '../db/index.js';
-import { badRequest, conflict, notFound, param, parseBody, queryInt, queryStr, wrap } from './errors.js';
+import { badRequest, conflict, notFound, param, parseBody, queryInt, queryStr, wrap, zodDetail } from './errors.js';
 import type { Backfill } from '../backfill/index.js';
 import { registerBackfillRoutes } from './backfill.js';
 import { ONBOARDING_COMPLETED_KEY, registerOnboardingRoutes } from './onboarding.js';
@@ -26,6 +28,7 @@ import { buildCostsReport, pricingWithOverrides } from './costs.js';
 import { nanoid } from 'nanoid';
 import { notifyMacos } from '../loop/notify-macos.js';
 import { isActiveDay, isQuietHours, isWithinWorkingHours } from '../loop/time.js';
+import { mostRecentAnswerableSurface, responseWindowMs } from '../loop/response-tracker.js';
 
 export const AGENT_VERSION = '0.1.0';
 
@@ -38,6 +41,58 @@ const SettingsPatchSchema = z.object({ patch: z.record(z.string(), z.unknown()) 
 // meant to write (see docs/BACKLOG.md: llm.models/llm.pricing today).
 const SETTABLE_SETTINGS_KEYS = new Set(['llm.models', 'llm.pricing']);
 
+// llm.models values, validated per key rather than just per key *name*: an
+// empty model string for a known task ("" beats the DEFAULT_MODELS fallback
+// and every chat turn errors) is exactly what let finding #1 through before.
+// A patch only ever touches a subset of tasks (e.g. just `{chat: "..."}`), so
+// this can't be `z.record(z.enum(LLM_TASK_KEYS), ...)` — zod treats an
+// enum-keyed record as exhaustive (every enum member required), which would
+// reject any partial patch. Plain string keys + a superRefine catches unknown
+// task names instead.
+const LLM_TASK_KEYS = new Set(Object.keys(DEFAULT_MODELS));
+const LlmModelsValueSchema = z
+  .record(z.string(), z.string().trim().min(1))
+  .superRefine((val, ctx) => {
+    for (const task of Object.keys(val)) {
+      if (!LLM_TASK_KEYS.has(task)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `unknown task "${task}"`, path: [task] });
+      }
+    }
+  });
+
+const ModelPricingValueSchema = z
+  .object({
+    inputPerMTok: z.number().finite().nonnegative(),
+    outputPerMTok: z.number().finite().nonnegative(),
+    cacheReadPerMTok: z.number().finite().nonnegative().optional(),
+    cacheCreationPerMTok: z.number().finite().nonnegative().optional(),
+  })
+  .strict();
+const LlmPricingValueSchema = z.record(z.string().min(1), ModelPricingValueSchema);
+
+// Per-key value validators for SETTABLE_SETTINGS_KEYS. Extend alongside the
+// allowlist above — a key with no entry here is rejected defensively (see
+// validateSettingValue) rather than accepted with no shape check.
+const SETTINGS_VALUE_SCHEMAS: Record<string, z.ZodType> = {
+  'llm.models': LlmModelsValueSchema,
+  'llm.pricing': LlmPricingValueSchema,
+};
+
+function validateSettingValue(key: string, value: unknown): unknown {
+  const schema = SETTINGS_VALUE_SCHEMAS[key];
+  if (!schema) {
+    // Should be unreachable (every allowlisted key has a schema above), but
+    // fail closed rather than write an unvalidated shape if the two ever
+    // drift apart.
+    throw badRequest(`setting "${key}" has no value validator`);
+  }
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw badRequest(`invalid value for "${key}": ${zodDetail(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
 function assertSettableSettingsKey(key: string): void {
   if (!SETTABLE_SETTINGS_KEYS.has(key)) {
     throw badRequest(`setting "${key}" is not user-settable`);
@@ -45,6 +100,15 @@ function assertSettableSettingsKey(key: string): void {
 }
 
 const DAY_MS = 86_400_000;
+
+// Task actions that answer a proactive surface, and the response_type each
+// records (loop/response-tracker.ts). 'reopen'/'priority' aren't answers to
+// a nudge, so they intentionally have no entry here.
+const SURFACE_RESPONSE_FOR_ACTION: Partial<Record<'done' | 'snooze' | 'dismiss' | 'reopen' | 'priority', 'completed' | 'snoozed' | 'dismissed'>> = {
+  done: 'completed',
+  snooze: 'snoozed',
+  dismiss: 'dismissed',
+};
 
 // ---------- enrichment helpers ----------
 
@@ -121,7 +185,20 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
       const limit = queryInt(req.query.limit, 'limit');
       const before = queryStr(req.query.before);
       const beforeId = queryStr(req.query.beforeId);
-      res.json({ turns: db.chatHistory({ limit, before, beforeId }), sessions: db.listSessions() });
+      let turns: ChatTurn[];
+      try {
+        turns = db.chatHistory({ limit, before, beforeId });
+      } catch (err) {
+        // db.chatHistory() → getChatTurn() JSON.parses the stored `meta`
+        // column unguarded (db/index.ts, out of scope for this pass): one
+        // row with corrupted meta throws and takes the whole page down with
+        // it instead of just that row. Can't fix the parse itself here, so
+        // degrade instead of letting it 500 the endpoint: log with context
+        // and serve an empty page rather than break history entirely.
+        console.error('[chat/history] db.chatHistory() threw (likely malformed turn.meta JSON):', err);
+        turns = [];
+      }
+      res.json({ turns, sessions: db.listSessions() });
     }),
   );
 
@@ -241,6 +318,17 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
         }
       }
       if (body.reason) db.appendTaskHistory(id, 'action_reason', null, body.reason, 'user');
+
+      // Answering a nudge from the board is still answering it: stamp the
+      // response on the task's most recent unanswered, in-window surface so
+      // the 24h sweep doesn't later mark it 'expired' (H8) — mirrors what
+      // the chat heuristic tracker does for chat replies.
+      const responseType = SURFACE_RESPONSE_FOR_ACTION[body.action];
+      if (responseType) {
+        const surface = mostRecentAnswerableSurface(db, id, nowIso(), responseWindowMs(config));
+        if (surface) db.setProactiveResponse(surface.id, responseType, `ui: task_action ${body.action}`);
+      }
+
       broadcastTasks();
       res.json({ task: enrichTask(db, updated) });
     }),
@@ -273,6 +361,13 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
     wrap((req, res) => {
       const id = param(req, 'id');
       const { until } = parseBody(MuteRequestSchema, req.body);
+      // MuteRequestSchema (shared, frozen) only checks `until` is a string or
+      // null — it doesn't parse it as an instant. An unparseable value (e.g.
+      // "banana") was previously stored verbatim and silently never muted
+      // anyone (every isMuted-style comparison against it is just false).
+      if (until !== null && Number.isNaN(Date.parse(until))) {
+        throw badRequest(`invalid until: ${until}`);
+      }
       if (!db.getPerson(id)) throw notFound(`person ${id}`);
       res.json({ person: db.setPersonMuted(id, until) });
     }),
@@ -514,7 +609,10 @@ export function buildApiRouter(ctx: AgentContext, deps: { ingest: Ingest; loop: 
     wrap((req, res) => {
       const { patch } = parseBody(SettingsPatchSchema, req.body);
       for (const key of Object.keys(patch)) assertSettableSettingsKey(key);
-      for (const [key, value] of Object.entries(patch)) db.setSetting(key, value);
+      // Validate every value before writing any of them (no-partial-writes,
+      // same as the key allowlist check above).
+      const validated = Object.entries(patch).map(([key, value]) => [key, validateSettingValue(key, value)] as const);
+      for (const [key, value] of validated) db.setSetting(key, value);
       res.json({ settings: db.allSettings() });
     }),
   );

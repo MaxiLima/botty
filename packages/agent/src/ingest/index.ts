@@ -9,8 +9,7 @@ export { HEURISTIC_PATTERNS, hasSignal, matchSignals } from './heuristics.js';
 export type { HeuristicPattern, SignalKind } from './heuristics.js';
 export { processEvent, runFunnel } from './funnel.js';
 export type { FunnelCtx } from './util.js';
-export { handleGcal, handleTaskSource, meetingPrepCandidates } from './structured.js';
-export type { MeetingPrepCandidate } from './structured.js';
+export { handleGcal, handleTaskSource } from './structured.js';
 export { createScheduler, sinceKey } from './scheduler.js';
 export type { SchedulerCtx, SourceScheduler } from './scheduler.js';
 

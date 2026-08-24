@@ -83,6 +83,58 @@ describe('McpConnections', () => {
     }
   });
 
+  it('a crashed server transport evicts the cached client so the next call reconnects (finding 2)', async () => {
+    const fixture = createFixtureMcpServer('demo');
+    const cfg: McpConfig = { servers: { demo: serverConfig() } };
+    const conns = createMcpConnections({ getConfig: () => cfg, transportFactory: fixture.transportFactory });
+    try {
+      const first = await conns.callTool('demo', 'echo', { message: 'before crash' });
+      expect(first).toEqual({ content: 'echo: before crash' });
+
+      // Simulate the external server dying (subprocess exit / transport close)
+      // WITHOUT going through closeAll()/onConfigChanged — nothing in our own
+      // code told the connection to drop.
+      await fixture.crash();
+      // Let the async onclose callback run (InMemoryTransport.close() awaits
+      // the other side, then fires onclose — give the microtask queue a beat).
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Before the fix, the dead client stayed cached and every subsequent
+      // call would hang/fail against a closed transport until agent restart.
+      // After the fix, the next call reconnects fresh (transportFactory opens
+      // a brand-new linked pair against the still-alive McpServer instance).
+      const second = await conns.callTool('demo', 'echo', { message: 'after crash' });
+      expect(second).toEqual({ content: 'echo: after crash' });
+      expect(fixture.calls.map((c) => c.args)).toEqual([{ message: 'before crash' }, { message: 'after crash' }]);
+    } finally {
+      await conns.closeAll();
+      await fixture.close();
+    }
+  });
+
+  it('a connect() that never resolves times out instead of hanging the caller (finding 4)', async () => {
+    const cfg: McpConfig = { servers: { demo: serverConfig() } };
+    const conns = createMcpConnections({
+      getConfig: () => cfg,
+      // Short override so the test doesn't have to eat the real 10s default.
+      connectTimeoutMs: 100,
+      transportFactory: () => ({
+        // A transport whose start()/connect() handshake never completes —
+        // simulates an unreachable/hung server process.
+        start: () => new Promise(() => {}),
+        close: async () => {},
+        send: async () => {},
+      }),
+    });
+    const start = Date.now();
+    const result = await conns.callTool('demo', 'echo', {});
+    expect('error' in result && result.error).toMatch(/failed to connect/);
+    expect('error' in result && result.error).toMatch(/timed out/);
+    // Bounded by the (overridden, here very short) connect timeout — nowhere
+    // near the MCP SDK's own 60s default request timeout the finding was about.
+    expect(Date.now() - start).toBeLessThan(2_000);
+  });
+
   it('onConfigChanged is a no-op for a server whose config is unchanged (no reconnect)', async () => {
     const fixture = createFixtureMcpServer('demo');
     const cfg: McpConfig = { servers: { demo: serverConfig() } };

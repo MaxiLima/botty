@@ -6,7 +6,10 @@ import {
   buildCommitmentPrompt,
   COMMITMENT_SYSTEM_MARKER,
   extractCommitments,
+  formatLocalIsoWithOffset,
+  formatLocalIsoWithOffsetAndWeekday,
   hasCommitmentSignal,
+  localCalendarDate,
   resolveDueAt,
 } from '../../src/chat/commitments.js';
 import { parseHeartbeat } from '../../src/config/parse.js';
@@ -47,8 +50,86 @@ describe('hasCommitmentSignal — cheap heuristic gate', () => {
     }
   });
 
+  // Finding: the gate was English-only, so "mi entrevista es mañana a las 3" never
+  // reached the LLM extraction pass at all — the owner's traffic is bilingual.
+  it('matches Spanish near-term date/time language', () => {
+    for (const text of [
+      'mi entrevista es mañana a las 3',
+      'pasado mañana tengo que llamar al plomero',
+      'te aviso esta tarde',
+      'el lunes tengo turno con el dentista',
+      'recordame comprar el regalo',
+      'acordate de mandar el informe',
+      'avisame cuando termine la reunión',
+      'la cita es a la 1',
+    ]) {
+      expect(hasCommitmentSignal(text)).toBe(true);
+    }
+  });
+
+  it('does not match Spanish chatter with no time language', () => {
+    for (const text of ['gracias por todo!', 'me parece bien', 'qué tengo pendiente?']) {
+      expect(hasCommitmentSignal(text)).toBe(false);
+    }
+  });
+
   it('matches the test marker even without natural time language', () => {
     expect(hasCommitmentSignal('[[commitment: something | 2026-07-10T00:00:00.000Z]]')).toBe(true);
+  });
+});
+
+describe('formatLocalIsoWithOffset — chat prompt "Current time" (2026-08-15 set_reminder tz bug)', () => {
+  const INSTANT = '2026-08-15T19:52:00.000Z';
+
+  it('renders local wall-clock with the correct negative offset', () => {
+    expect(formatLocalIsoWithOffset(INSTANT, 'America/Argentina/Buenos_Aires')).toBe(
+      '2026-08-15T16:52:00-03:00',
+    );
+  });
+
+  it('handles positive and half-hour offsets (day rollover included)', () => {
+    expect(formatLocalIsoWithOffset(INSTANT, 'Asia/Tokyo')).toBe('2026-08-16T04:52:00+09:00');
+    expect(formatLocalIsoWithOffset(INSTANT, 'Asia/Kolkata')).toBe('2026-08-16T01:22:00+05:30');
+  });
+
+  it('round-trips through resolveDueAt to the same instant', () => {
+    for (const tz of ['America/Argentina/Buenos_Aires', 'Asia/Tokyo', 'UTC']) {
+      expect(resolveDueAt(formatLocalIsoWithOffset(INSTANT, tz), tz)).toBe(INSTANT);
+    }
+  });
+});
+
+// H1 (2026-08-21 investigation): every "current time"/reference-instant prompt
+// line OUTSIDE chat (ingest funnel OCCURRED_AT, tick judgment, briefings) needs
+// the local weekday too, since relative expressions ("tomorrow", "Thursday")
+// are resolved against it.
+describe('formatLocalIsoWithOffsetAndWeekday', () => {
+  const INSTANT = '2026-08-15T19:52:00.000Z';
+
+  it('appends the LOCAL weekday (negative offset, day does not roll over)', () => {
+    expect(formatLocalIsoWithOffsetAndWeekday(INSTANT, 'America/Argentina/Buenos_Aires')).toBe(
+      '2026-08-15T16:52:00-03:00 (Saturday)',
+    );
+  });
+
+  it('appends the LOCAL weekday for positive and half-hour offsets (day rolls over)', () => {
+    expect(formatLocalIsoWithOffsetAndWeekday(INSTANT, 'Asia/Tokyo')).toBe(
+      '2026-08-16T04:52:00+09:00 (Sunday)',
+    );
+    expect(formatLocalIsoWithOffsetAndWeekday(INSTANT, 'Asia/Kolkata')).toBe(
+      '2026-08-16T01:22:00+05:30 (Sunday)',
+    );
+  });
+});
+
+describe('localCalendarDate', () => {
+  const INSTANT = '2026-08-15T19:52:00.000Z';
+
+  it('returns the LOCAL calendar date, which can differ from the UTC date', () => {
+    // UTC date is 2026-08-15; Tokyo/Kolkata are already the 16th.
+    expect(localCalendarDate(INSTANT, 'America/Argentina/Buenos_Aires')).toBe('2026-08-15');
+    expect(localCalendarDate(INSTANT, 'Asia/Tokyo')).toBe('2026-08-16');
+    expect(localCalendarDate(INSTANT, 'Asia/Kolkata')).toBe('2026-08-16');
   });
 });
 
@@ -319,7 +400,11 @@ describe('chat/index.ts — commitment extraction hook', () => {
         req.onEvent({ type: 'text', text: 'Tracked it.' });
         req.onEvent({ type: 'done' });
         void result;
-        return { text: 'Tracked it.', providerSessionId: 'x', usage: { inputTokens: 0, outputTokens: 0 } };
+        return {
+          text: 'Tracked it.',
+          providerSessionId: 'x',
+          usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalCostUsd: null },
+        };
       },
       structured: (req) => base.structured(req),
       interrupt: (key) => base.interrupt(key),

@@ -40,6 +40,7 @@ async function setup(opts: { checkNow?: (source: SourceId) => Promise<string> } 
     simUrl: 'http://localhost:4821',
     mockLlm: true,
     port: 0, // ephemeral
+    devOriginPorts: [5173],
   };
   fs.mkdirSync(env.configArchiveDir, { recursive: true });
   fs.writeFileSync(path.join(env.configDir, 'persona.md'), '# PERSONA\nYou are botty.', 'utf8');
@@ -481,6 +482,147 @@ describe('server: tasks', () => {
       await h.teardown();
     }
   });
+
+  // H8: acting on a task from the board must be recorded as a response on
+  // the nudge that prompted it, same as the chat heuristic tracker does —
+  // otherwise the 24h sweep marks a task the user acted on as "expired".
+  describe('POST /api/tasks/:id/action records a response on the answered surface (H8)', () => {
+    it('done → completed', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const surface = h.ctx.db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'done' }),
+        });
+        const row = h.ctx.db.surfacesForTask(t.id, 1)[0]!;
+        expect(row.id).toBe(surface.id);
+        expect(row.responseType).toBe('completed');
+        expect(row.responseReason).toBe('ui: task_action done');
+      } finally {
+        await h.teardown();
+      }
+    });
+
+    it('snooze → snoozed', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const surface = h.ctx.db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'snooze', snoozeDays: 1 }),
+        });
+        const row = h.ctx.db.surfacesForTask(t.id, 1)[0]!;
+        expect(row.id).toBe(surface.id);
+        expect(row.responseType).toBe('snoozed');
+      } finally {
+        await h.teardown();
+      }
+    });
+
+    it('dismiss → dismissed', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const surface = h.ctx.db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'dismiss' }),
+        });
+        const row = h.ctx.db.surfacesForTask(t.id, 1)[0]!;
+        expect(row.id).toBe(surface.id);
+        expect(row.responseType).toBe('dismissed');
+      } finally {
+        await h.teardown();
+      }
+    });
+
+    it('no recent surface for the task → records nothing (no fabricated response)', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const res = await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'done' }),
+        });
+        expect(res.status).toBe(200);
+        expect(h.ctx.db.surfacesForTask(t.id, 1)).toEqual([]);
+      } finally {
+        await h.teardown();
+      }
+    });
+
+    it('a surface that already has a response is not overwritten', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const surface = h.ctx.db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+        h.ctx.db.setProactiveResponse(surface.id, 'completed', 'chat: already answered');
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'dismiss' }),
+        });
+        const row = h.ctx.db.surfacesForTask(t.id, 1)[0]!;
+        expect(row.responseType).toBe('completed');
+        expect(row.responseReason).toBe('chat: already answered');
+      } finally {
+        await h.teardown();
+      }
+    });
+
+    it('a surface older than the response window is not touched', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const surface = h.ctx.db.insertProactiveLog({
+          taskId: t.id,
+          surfaceKind: 'nudge',
+          message: 'nudge',
+          surfacedAt: new Date(Date.now() - 25 * 3_600_000).toISOString(), // > default 24h window
+        });
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'done' }),
+        });
+        const row = h.ctx.db.surfacesForTask(t.id, 1)[0]!;
+        expect(row.id).toBe(surface.id);
+        expect(row.responseType).toBeNull();
+      } finally {
+        await h.teardown();
+      }
+    });
+
+    it('reopen and priority are not answers to a nudge → record nothing', async () => {
+      const h = await setup();
+      try {
+        const t = seedTask(h);
+        const surface = h.ctx.db.insertProactiveLog({ taskId: t.id, surfaceKind: 'nudge', message: 'nudge' });
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'priority', priority: 1 }),
+        });
+        await fetch(`${h.base}/api/tasks/${t.id}/action`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'reopen' }),
+        });
+        const row = h.ctx.db.surfacesForTask(t.id, 1)[0]!;
+        expect(row.id).toBe(surface.id);
+        expect(row.responseType).toBeNull();
+      } finally {
+        await h.teardown();
+      }
+    });
+  });
 });
 
 describe('server: config', () => {
@@ -629,6 +771,27 @@ describe('server: local-only guards', () => {
 
       expect((await request(`localhost:${h.port}`)).status).toBe(200);
       expect((await request(`127.0.0.1:${h.port}`)).status).toBe(200);
+    } finally {
+      await h.teardown();
+    }
+  });
+
+  it('rejects a WS upgrade whose Host header is not loopback (DNS rebinding)', async () => {
+    const h = await setup();
+    try {
+      const connect = (host: string) =>
+        new Promise<'open' | 'rejected'>((resolve) => {
+          const ws = new WebSocket(`ws://127.0.0.1:${h.port}/ws`, { headers: { host } });
+          ws.once('open', () => {
+            ws.close();
+            resolve('open');
+          });
+          ws.once('error', () => resolve('rejected'));
+          ws.once('unexpected-response', () => resolve('rejected'));
+        });
+
+      expect(await connect('attacker.example.com')).toBe('rejected');
+      expect(await connect(`localhost:${h.port}`)).toBe('open');
     } finally {
       await h.teardown();
     }

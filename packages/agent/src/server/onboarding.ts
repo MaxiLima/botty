@@ -59,6 +59,62 @@ const BLANK_PERSONA = {
   banned: '',
 } as const;
 
+/**
+ * The web client's repeating-group steps (Team, Directives' checklist) can
+ * carry rows the user never filled in — an empty "add a person"/"add a
+ * checklist item" row left over from a step they skipped or clicked through.
+ * `TeamMemberAnswerSchema.name` and `ChecklistItemAnswerSchema.text` are
+ * rightly `min(1)` in the frozen shared schema (a real row needs a name/text),
+ * so those rows 400 the whole preview/apply request instead of just being
+ * ignored. Drop rows with a blank identifying field here, before validating
+ * against that schema, so a step the user skipped never fails the request —
+ * this only ever removes empty placeholder rows; a partially-filled row
+ * (e.g. a name typo) still fails validation as it should.
+ */
+function dropBlankOnboardingRows(body: unknown): unknown {
+  if (typeof body !== 'object' || body === null) return body;
+  const top = body as Record<string, unknown>;
+  const answers = top.answers;
+  if (typeof answers !== 'object' || answers === null) return body;
+  const nextAnswers: Record<string, unknown> = { ...(answers as Record<string, unknown>) };
+
+  const team = nextAnswers.team;
+  if (typeof team === 'object' && team !== null) {
+    const people = (team as Record<string, unknown>).people;
+    if (Array.isArray(people)) {
+      nextAnswers.team = {
+        ...(team as Record<string, unknown>),
+        people: people.filter(
+          (p) =>
+            typeof p === 'object' &&
+            p !== null &&
+            typeof (p as Record<string, unknown>).name === 'string' &&
+            ((p as Record<string, unknown>).name as string).trim().length > 0,
+        ),
+      };
+    }
+  }
+
+  const directives = nextAnswers.directives;
+  if (typeof directives === 'object' && directives !== null) {
+    const checklist = (directives as Record<string, unknown>).checklist;
+    if (Array.isArray(checklist)) {
+      nextAnswers.directives = {
+        ...(directives as Record<string, unknown>),
+        checklist: checklist.filter(
+          (c) =>
+            typeof c === 'object' &&
+            c !== null &&
+            typeof (c as Record<string, unknown>).text === 'string' &&
+            ((c as Record<string, unknown>).text as string).trim().length > 0,
+        ),
+      };
+    }
+  }
+
+  return { ...top, answers: nextAnswers };
+}
+
 export function registerOnboardingRoutes(router: Router, ctx: AgentContext): void {
   const { db, config, env } = ctx;
 
@@ -164,7 +220,7 @@ export function registerOnboardingRoutes(router: Router, ctx: AgentContext): voi
   router.post(
     '/onboarding/preview',
     wrap((req, res) => {
-      const { answers, steps } = parseBody(OnboardingApplyRequestSchema, req.body);
+      const { answers, steps } = parseBody(OnboardingApplyRequestSchema, dropBlankOnboardingRows(req.body));
       const rendered = renderTargets(answers, steps);
       const files: Record<string, { content: string; current: string | null; changed: boolean }> = {};
       for (const [file, content] of Object.entries(rendered) as [TargetFile, string][]) {
@@ -179,7 +235,10 @@ export function registerOnboardingRoutes(router: Router, ctx: AgentContext): voi
   router.post(
     '/onboarding/apply',
     wrap((req, res) => {
-      const { answers, steps, mtimes: clientMtimes } = parseBody(OnboardingApplyRequestSchema, req.body);
+      const { answers, steps, mtimes: clientMtimes } = parseBody(
+        OnboardingApplyRequestSchema,
+        dropBlankOnboardingRows(req.body),
+      );
       const rendered = renderTargets(answers, steps);
       const warnings: Record<string, string[]> = {};
 

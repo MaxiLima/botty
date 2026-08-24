@@ -21,9 +21,34 @@ export function timeAgo(iso: string | null | undefined): string {
   return `${Math.floor(d / 30)}mo`;
 }
 
+// `YYYY-MM-DD` (no time part) carries no time zone. `new Date(str)` parses it
+// as UTC midnight, which lands on the wrong calendar day for any viewer not
+// on UTC — see H2. Treat that shape specially and interpret it in the
+// *viewer's* local calendar instead of UTC. Full ISO instants
+// (`...T...Z`/offset) already carry an unambiguous moment and are untouched.
+// Mirrored from packages/web/src/lib/format.ts (see file-header note).
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Local midnight of a `YYYY-MM-DD` string, or null if the shape matched but
+ * the value doesn't round-trip (e.g. "2026-02-30") — callers fall back to
+ * the plain `new Date(iso)` parse (which yields `Invalid Date`) so garbage
+ * input keeps behaving exactly as it did before this fix.
+ */
+function localMidnightOf(iso: string): Date | null {
+  const m = DATE_ONLY_RE.exec(iso);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(y, mo - 1, day);
+  if (d.getFullYear() !== y || d.getMonth() !== mo - 1 || d.getDate() !== day) return null;
+  return d;
+}
+
 export function shortDate(iso: string | null | undefined): string {
   if (!iso) return '–';
-  const d = new Date(iso);
+  const d = (DATE_ONLY_RE.test(iso) && localMidnightOf(iso)) || new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
